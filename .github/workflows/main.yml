@@ -87,96 +87,57 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-      - name: Install RustDesk 1.4.2, set fixed password, print ID and keep alive
+            - name: Install DwService (remote access alternative)
         shell: pwsh
         run: |
-          # --------- 1) Letöltés -----------
-          $url = "https://github.com/rustdesk/rustdesk/releases/download/1.4.2/rustdesk-1.4.2-x86_64.exe"
-          $installer = "$env:TEMP\RustDesk.exe"
-          Write-Host "Letöltés: $url"
+          Write-Host "=== DWService telepítése ==="
+          $url = "https://www.dwservice.net/download/dwagent.exe"
+          $installer = "$env:TEMP\dwagent.exe"
           Invoke-WebRequest -Uri $url -OutFile $installer
+          
+          Write-Host "DWAgent telepítő letöltve: $installer"
+          
+          # Csendes telepítés (GUI nélkül)
+          Write-Host "Telepítés indítása..."
+          Start-Process -FilePath $installer -ArgumentList "/silent /minimized" -PassThru | Out-Null
+          Start-Sleep -Seconds 15
 
-          # --------- 2) Telepítés silent (force continue) -----------
-          Write-Host "Silent telepítés (no wait, force continue)..."
-          $p = Start-Process -FilePath $installer -ArgumentList "--silent-install" -PassThru
-          Start-Sleep -Seconds 20
-          if (!$p.HasExited) {
-              Write-Host "Telepítő még fut, leállítom..."
-              try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
-          }
-          Write-Host "Telepítés befejezve (folytatás)..."
-
-          # --------- 3) Keresés a RustDesk futtathatóra + fallback -----------
-          Write-Host "Keresem a RustDesk futtathatót..."
-          $searchPaths = @(
-            "C:\Program Files*",
-            "C:\Program Files (x86)*",
-            "C:\Users\runneradmin\AppData\Local",
-            "C:\Users\runneradmin\AppData\Local\Programs",
-            "C:\Users\runneradmin\AppData\Roaming"
-          )
-          $possible = $null
-          foreach ($p in $searchPaths) {
-            $found = Get-ChildItem -Path $p -Filter "rustdesk.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-            if ($found) {
-              $possible = $found
-              break
-            }
+          # Keressük a telepített DWAgent-et
+          $dwFolder = "C:\Program Files\DWAgent"
+          if (-not (Test-Path $dwFolder)) {
+            $dwFolder = "C:\DWAgent"
           }
 
-          if (-not $possible) {
-            Write-Warning "⚠️ Telepített RustDesk nem található, az installer fájlt fogom használni."
-            if (Test-Path $installer) {
-              $rustdeskExe = $installer
-              Write-Host "✅ Használom a letöltött futtathatót: $rustdeskExe"
-            } else {
-              Write-Error "❌ RustDesk nem található se telepítve, se az ideiglenes mappában!"
-              exit 1
-            }
+          if (Test-Path "$dwFolder\dwagent.exe") {
+            Write-Host "✅ DWService telepítve: $dwFolder"
           } else {
-            $rustdeskExe = $possible.FullName
-            Write-Host "✅ RustDesk helye: $rustdeskExe"
+            Write-Error "❌ DWService telepítése sikertelen!"
+            exit 1
           }
 
-          # --------- 4) Fix jelszó beállítása -----------
-          $pwd = "KUTYAcica01!"
-          Write-Host "🔐 Jelszó beállítása: $pwd"
-          & $rustdeskExe --password $pwd
-          Start-Sleep -Seconds 3
-
-          # --------- 5) RustDesk elindítása és ID lekérése -----------
-          Write-Host "RustDesk elindítása (háttérben)..."
-          Start-Process -FilePath $rustdeskExe -ArgumentList "--minimized" -WorkingDirectory (Split-Path $rustdeskExe)
-          Start-Sleep -Seconds 5
-
-          Write-Host "RustDesk ID lekérése..."
-          $id = & $rustdeskExe --get-id 2>$null
-          if (-not $id) {
-            Write-Warning "Nem sikerült lekérni az ID-t, próbálom újra..."
-            Start-Sleep -Seconds 3
-            $id = & $rustdeskExe --get-id 2>$null
-          }
-          if (-not $id) {
-            Write-Error "Nem sikerült azonosítót lekérni."
-            $id = "UNKNOWN"
+          # Azonosító és kód kinyerése
+          $configFile = "$dwFolder\data\config.json"
+          if (Test-Path $configFile) {
+            $json = Get-Content $configFile -Raw | ConvertFrom-Json
+            $agentId = $json.agentid
+            $code = $json.password
+            Write-Host ""
+            Write-Host "=== 🖥️ DWService hozzáférés ==="
+            Write-Host "🌐 Látogass el ide: https://www.dwservice.net"
+            Write-Host "💻 Agent ID: $agentId"
+            Write-Host "🔑 Access Code: $code"
+            Write-Host "==============================="
           } else {
-            $id = $id.Trim()
+            Write-Warning "⚠️ Nem találtam DWAgent configot — lehet még nem generálódott."
           }
 
-          # --------- 6) Eredmény kiírás -----------
-          Write-Host ""
-          Write-Host "=== 🖥️ RUSTDESK HOZZÁFÉRÉS ==="
-          Write-Host "💻 ID (connect code): $id"
-          Write-Host "🔑 Password: KUTYAcica01!"
-          Write-Host "=============================="
-
-          # --------- 7) Keep alive 1 óráig -----------
-          Write-Host "A gép 1 óráig aktív marad (60 perc)..."
+          Write-Host "A gép 60 percig aktív marad..."
           for ($i = 1; $i -le 60; $i++) {
-            Write-Host "⏳ RustDesk aktív - eltelt $i perc / 60"
+            Write-Host "⏳ DWService aktív - eltelt $i perc / 60"
             Start-Sleep -Seconds 60
           }
           Write-Host "⏹️ Idő lejárt, a workflow most leáll."
+
 
 
 
