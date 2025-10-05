@@ -87,7 +87,7 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-            - name: Install RustDesk 1.4.2, set fixed password, and print ID
+      - name: Install RustDesk 1.4.2, set fixed password, and print ID
         shell: pwsh
         run: |
           # --------- 1) Letöltés -----------
