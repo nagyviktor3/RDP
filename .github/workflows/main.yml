@@ -87,14 +87,14 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-      - name: Install RustDesk, set password, and print ID+masked password
+      - name: Install RustDesk 1.4.2, set password, and print ID+masked password
         shell: pwsh
         run: |
           # --------- 1) Letöltés -----------
-          $url = "https://github.com/rustdesk/rustdesk/releases/latest/download/RustDesk.exe"
+          $url = "https://github.com/rustdesk/rustdesk/releases/download/1.4.2/rustdesk-1.4.2-x86_64.exe"
           $installer = "$env:TEMP\RustDesk.exe"
           Write-Host "Letöltés: $url"
-          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+          Invoke-WebRequest -Uri $url -OutFile $installer
 
           # --------- 2) Telepítés silent -----------
           Write-Host "Silent telepítés..."
@@ -122,7 +122,6 @@ jobs:
 
           # --------- 5) Beállítjuk az unattended jelszót -----------
           Write-Host "RustDesk unattended password beállítása..."
-          # rustdesk.exe --password <pwd>
           & $rustdeskExe --password $pwd
           Start-Sleep -Seconds 2
 
@@ -142,7 +141,6 @@ jobs:
 
           if (-not $id) {
             Write-Error "ID lekérése sikertelen. Lehet a verzió nem támogatja a CLI-t vagy a kliens még nem generálta az ID-t."
-            # továbbra is kilépni nem feltétlen szükséges — de jelezzük
             $id = "UNKNOWN"
           } else {
             $id = $id.Trim()
