@@ -9,25 +9,58 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Create or update RDP User with fixed password
+        shell: pwsh
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+          # Fixed password as requested
+          $password = "KUTYAcica"
 
-          # Remove any existing rule with the same name to avoid duplication
-          netsh advfirewall firewall delete rule name="RDP-Tailscale"
-          
-          # For testing, allow any incoming connection on port 3389
-          netsh advfirewall firewall add rule name="RDP-Tailscale" `
-            dir=in action=allow protocol=TCP localport=3389
+          # Convert to secure string (needed by New-LocalUser / Set-LocalUser)
+          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
 
-          # (Optional) Restart the Remote Desktop service to ensure changes take effect
-          Restart-Service -Name TermService -Force
+          # If user exists, update password; otherwise create user
+          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
+            Write-Host "User 'RDP' already exists — updating password..."
+            try {
+              Set-LocalUser -Name "RDP" -Password $securePass -ErrorAction Stop
+            } catch {
+              Write-Host "Hiba a jelszó beállításakor: $_"
+              exit 1
+            }
+          } else {
+            Write-Host "Creating local user 'RDP'..."
+            try {
+              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -Description "Created by workflow"
+            } catch {
+              Write-Host "Hiba a felhasználó létrehozásakor: $_"
+              exit 1
+            }
+          }
+
+          # Ensure the user is in Administrators and Remote Desktop Users groups
+          try {
+            if (-not (Get-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue)) {
+              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
+            }
+            if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue)) {
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
+            }
+          } catch {
+            Write-Host "Hiba a csoportok beállításakor: $_"
+            # nem feltétlen exit; folytathatjuk, de jelezzük
+          }
+
+          # Export the credentials string to GITHUB_ENV so later steps can read it
+          echo "RDP_CREDS=User: RDP | Password: KUTYAcica" >> $env:GITHUB_ENV
+
+          # Verify user exists
+          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
+              Write-Error "User creation or update failed"
+              exit 1
+          } else {
+              Write-Host "RDP user ready (Password: KUTYAcica)"
+          }
+
 
       - name: Create RDP User with Secure Password
         run: |
