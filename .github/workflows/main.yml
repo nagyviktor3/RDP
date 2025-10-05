@@ -85,6 +85,94 @@ jobs:
               exit 1
           }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+
+      - name: Install AnyDesk & configure unattended access (PowerShell)
+        shell: pwsh
+        run: |
+          # --- letöltés és telepítés ---
+          $url = $env:ANYDESK_INSTALL_URL
+          if (-not $url) { $url = "https://download.anydesk.com/AnyDesk.msi" }
+          $installer = "$env:TEMP\AnyDesk.msi"
+          Write-Host "Downloading AnyDesk..."
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
+
+          Write-Host "Installing AnyDesk (silent)..."
+          Start-Process msiexec.exe -ArgumentList '/i', "`"$installer`"", '/quiet', '/norestart' -Wait
+
+          Remove-Item $installer -Force -ErrorAction SilentlyContinue
+
+          # --- tűzfal megnyitása (szükség esetén) ---
+          netsh advfirewall firewall add rule name="AnyDesk-Inbound" dir=in action=allow program="C:\Program Files (x86)\AnyDesk\AnyDesk.exe" enable=yes
+          netsh advfirewall firewall add rule name="AnyDesk-Service-Inbound" dir=in action=allow program="C:\Program Files\AnyDesk\AnyDesk.exe" enable=yes
+
+          Start-Sleep -Seconds 3
+
+          # --- útvonalok (2 lehetséges telepítési hely) ---
+          $possiblePaths = @(
+            "C:\Program Files\AnyDesk\AnyDesk.exe",
+            "C:\Program Files (x86)\AnyDesk\AnyDesk.exe",
+            "C:\Program Files\AnyDeskMSI\AnyDeskMSI.exe",
+            "C:\Program Files (x86)\AnyDeskMSI\AnyDeskMSI.exe"
+          )
+
+          $anydeskExe = $possiblePaths | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $anydeskExe) {
+            Write-Error "AnyDesk futtatható nem található a várt helyeken."
+            exit 1
+          }
+
+          Write-Host "AnyDesk elérve itt: $anydeskExe"
+
+          # --- jelszó beállítása unattended access-hez (GitHub Secret) ---
+          if (-not $env:ANYDESK_PASSWORD) {
+            Write-Error "ANYDESK_PASSWORD secret nincs beállítva!"
+            exit 1
+          }
+
+          $pwd = $env:ANYDESK_PASSWORD
+
+          # Maszkolás a GitHub logban
+          Write-Host "::add-mask::$pwd"
+
+          # A CLI --set-password paraméter használata: pipeljük a jelszót az exe-nek
+          # (Sok felhasználói tapasztalat szerint: echo "pwd" | anydesk --set-password)
+          Write-Host "Beállítom az unattended jelszót..."
+          $setPasswordCmd = "cmd /c echo $pwd| `"$anydeskExe`" --set-password"
+          Invoke-Expression $setPasswordCmd
+
+          Start-Sleep -Seconds 2
+
+          # --- lekérjük az AnyDesk ID-t a CLI-vel ---
+          Write-Host "Lekérem az AnyDesk ID-t..."
+          $id = & $anydeskExe --get-id 2>$null
+          if (-not $id) {
+            Write-Host "Nem kaptam ID-t a --get-id paranccsal, próbálkozom registry-vel..."
+            # Alternatív: keresés Process output vagy registry (nem minden verzió tárolja ugyanúgy)
+            $id = (& $anydeskExe --get-id 2>&1) -join "`n"
+          }
+
+          if (-not $id) {
+            Write-Error "Nem sikerült lekérni az AnyDesk ID-t."
+            exit 1
+          }
+
+          $id = $id.Trim()
+          Write-Host "::add-mask::$id"
+
+          # --- kiírás és env-be mentés (maszkolt) ---
+          echo "ANYDESK_ID=$id" >> $env:GITHUB_ENV
+          echo "ANYDESK_PASSWORD=***(masked)***" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "=== ANYDESK ACCESS ==="
+          Write-Host "ID (masked in logs): $id"
+          Write-Host "Unattended password: (masked in logs)"
+          Write-Host "======================"
+
+
+
       
       - name: Verify RDP Accessibility
         run: |
