@@ -13,7 +13,7 @@ jobs:
         shell: pwsh
         run: |
           # Fixed password as requested
-          $password = "KUTYAcica"
+          $password = "KUTYAcica01!"
 
           # Convert to secure string (needed by New-LocalUser / Set-LocalUser)
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
