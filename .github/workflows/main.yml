@@ -91,7 +91,7 @@ jobs:
         shell: pwsh
         run: |
           Write-Host "=== DWService telepítése ==="
-          $url = "https://www.dwservice.net/download/dwagent.exe"
+          $url = "https://www.dwservice.net/download/dwagent_x86.exe"
           $installer = "$env:TEMP\dwagent.exe"
           Invoke-WebRequest -Uri $url -OutFile $installer
           
