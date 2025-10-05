@@ -87,57 +87,6 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-      - name: Install DwService (remote access alternative)
-        shell: pwsh
-        run: |
-          Write-Host "=== DWService telepítése ==="
-          $url = "https://www.dwservice.net/download/dwagent_x86.exe"
-          $installer = "$env:TEMP\dwagent.exe"
-          Invoke-WebRequest -Uri $url -OutFile $installer
-          
-          Write-Host "DWAgent telepítő letöltve: $installer"
-          
-          # Csendes telepítés (GUI nélkül)
-          Write-Host "Telepítés indítása..."
-          Start-Process -FilePath $installer -ArgumentList "/silent /minimized" -PassThru | Out-Null
-          Start-Sleep -Seconds 15
-
-          # Keressük a telepített DWAgent-et
-          $dwFolder = "C:\Program Files\DWAgent"
-          if (-not (Test-Path $dwFolder)) {
-            $dwFolder = "C:\DWAgent"
-          }
-
-          if (Test-Path "$dwFolder\dwagent.exe") {
-            Write-Host "✅ DWService telepítve: $dwFolder"
-          } else {
-            Write-Error "❌ DWService telepítése sikertelen!"
-            exit 1
-          }
-
-          # Azonosító és kód kinyerése
-          $configFile = "$dwFolder\data\config.json"
-          if (Test-Path $configFile) {
-            $json = Get-Content $configFile -Raw | ConvertFrom-Json
-            $agentId = $json.agentid
-            $code = $json.password
-            Write-Host ""
-            Write-Host "=== 🖥️ DWService hozzáférés ==="
-            Write-Host "🌐 Látogass el ide: https://www.dwservice.net"
-            Write-Host "💻 Agent ID: $agentId"
-            Write-Host "🔑 Access Code: $code"
-            Write-Host "==============================="
-          } else {
-            Write-Warning "⚠️ Nem találtam DWAgent configot — lehet még nem generálódott."
-          }
-
-          Write-Host "A gép 60 percig aktív marad..."
-          for ($i = 1; $i -le 60; $i++) {
-            Write-Host "⏳ DWService aktív - eltelt $i perc / 60"
-            Start-Sleep -Seconds 60
-          }
-          Write-Host "⏹️ Idő lejárt, a workflow most leáll."
-
 
 
 
