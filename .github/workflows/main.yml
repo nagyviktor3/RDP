@@ -110,7 +110,28 @@ jobs:
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
           # --------- 3) Megkeressük a telepített futtathatót -----------
-          $possible = Get-ChildItem -Path "C:\Program Files*","C:\Program Files (x86)*" -Filter "rustdesk.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          Write-Host "Keresem a RustDesk futtathatót..."
+          $searchPaths = @(
+            "C:\Program Files*",
+            "C:\Program Files (x86)*",
+            "C:\Users\runneradmin\AppData\Local",
+            "C:\Users\runneradmin\AppData\Roaming"
+          )
+          $possible = $null
+          foreach ($p in $searchPaths) {
+            $found = Get-ChildItem -Path $p -Filter "rustdesk.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+              $possible = $found
+              break
+            }
+          }
+          if (-not $possible) {
+            Write-Error "❌ RustDesk nem található egyik ismert helyen sem!"
+            exit 1
+          }
+          $rustdeskExe = $possible.FullName
+          Write-Host "✅ RustDesk helye: $rustdeskExe"
+
           if (-not $possible) {
             Write-Error "RustDesk nem található a várt helyeken. Telepítés sikertelen."
             exit 1
