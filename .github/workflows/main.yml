@@ -87,7 +87,7 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-      - name: Install RustDesk 1.4.2, set password, and print ID+masked password
+            - name: Install RustDesk 1.4.2, set fixed password, and print ID
         shell: pwsh
         run: |
           # --------- 1) Letöltés -----------
@@ -96,8 +96,7 @@ jobs:
           Write-Host "Letöltés: $url"
           Invoke-WebRequest -Uri $url -OutFile $installer
 
-          # --------- 2) Telepítés silent -----------
-          Write-Host "Silent telepítés..."
+          # --------- 2) Telepítés silent (force continue) -----------
           Write-Host "Silent telepítés (no wait, force continue)..."
           $p = Start-Process -FilePath $installer -ArgumentList "--silent-install" -PassThru
           Start-Sleep -Seconds 20
@@ -106,10 +105,9 @@ jobs:
               try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
           }
           Write-Host "Telepítés befejezve (folytatás)..."
-
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
-          # --------- 3) Megkeressük a telepített futtathatót -----------
+          # --------- 3) Keresés a telepített RustDesk-re -----------
           Write-Host "Keresem a RustDesk futtathatót..."
           $searchPaths = @(
             "C:\Program Files*",
@@ -132,60 +130,34 @@ jobs:
           $rustdeskExe = $possible.FullName
           Write-Host "✅ RustDesk helye: $rustdeskExe"
 
-          if (-not $possible) {
-            Write-Error "RustDesk nem található a várt helyeken. Telepítés sikertelen."
-            exit 1
-          }
-          $rustdeskExe = $possible.FullName
-          Write-Host "RustDesk helye: $rustdeskExe"
-
-          # --------- 4) Jelszó (secret) ellenőrzése -----------
-          if (-not $env:RUSTDESK_PASSWORD) {
-            Write-Error "RUSTDESK_PASSWORD secret nincs beállítva! Add meg a repo Secrets-ben."
-            exit 1
-          }
-          $pwd = $env:RUSTDESK_PASSWORD
-
-          # Maszkoljuk a jelszót a GitHub logban
-          Write-Host "::add-mask::$pwd"
-
-          # --------- 5) Beállítjuk az unattended jelszót -----------
-          Write-Host "RustDesk unattended password beállítása..."
+          # --------- 4) Fix jelszó beállítása -----------
+          $pwd = "KUTYAcica01!"
+          Write-Host "🔐 Jelszó beállítása: $pwd"
           & $rustdeskExe --password $pwd
-          Start-Sleep -Seconds 2
-
-          # --------- 6) Indítsuk el a RustDesk klienst (szükséges lehet az ID lekéréséhez) -----------
-          Write-Host "RustDesk elindítása (háttérben)..."
-          Start-Process -FilePath $rustdeskExe -ArgumentList "--minimized" -WorkingDirectory (Split-Path $rustdeskExe) | Out-Null
           Start-Sleep -Seconds 3
 
-          # --------- 7) Lekérjük az ID-t -----------
+          # --------- 5) RustDesk ID lekérése -----------
           Write-Host "RustDesk ID lekérése..."
           $id = & $rustdeskExe --get-id 2>$null
           if (-not $id) {
-            Write-Warning "Nem sikerült lekérni az ID-t a CLI-vel. Megpróbálom várni és újraolvasni..."
-            Start-Sleep -Seconds 4
+            Write-Warning "Nem sikerült lekérni az ID-t, próbálom újra..."
+            Start-Sleep -Seconds 3
             $id = & $rustdeskExe --get-id 2>$null
           }
-
           if (-not $id) {
-            Write-Error "ID lekérése sikertelen. Lehet a verzió nem támogatja a CLI-t vagy a kliens még nem generálta az ID-t."
+            Write-Error "Nem sikerült azonosítót lekérni."
             $id = "UNKNOWN"
           } else {
             $id = $id.Trim()
-            # maszkoljuk az ID-t is a logokban
-            Write-Host "::add-mask::$id"
           }
 
-          # --------- 8) Mentés env-be és olvasható összegzés -----------
-          echo "RUSTDESK_ID=$id" >> $env:GITHUB_ENV
-          echo "RUSTDESK_PASSWORD_SET=1" >> $env:GITHUB_ENV
-
+          # --------- 6) Eredmény kiírás -----------
           Write-Host ""
           Write-Host "=== RUSTDESK HOZZÁFÉRÉS ==="
-          Write-Host "ID (connect code): $id"
-          Write-Host "Password: (a jelszó a repo secret: RUSTDESK_PASSWORD) - a logban maszkolva."
+          Write-Host "💻 ID (connect code): $id"
+          Write-Host "🔑 Password: KUTYAcica01!"
           Write-Host "==========================="
+
 
 
 
