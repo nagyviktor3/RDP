@@ -9,9 +9,31 @@ jobs:
     timeout-minutes: 3600
 
     steps:
+      - name: Configure Core RDP Settings
+        shell: pwsh
+        run: |
+          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
+                             -Name "fDenyTSConnections" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "UserAuthentication" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                             -Name "SecurityLayer" -Value 0 -Force
+
+          # Remove any existing rule with the same name to avoid duplication
+          netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
+          
+          # Allow incoming RDP on 3389
+          netsh advfirewall firewall add rule name="RDP-Tailscale" `
+            dir=in action=allow protocol=TCP localport=3389
+
+          # Restart Remote Desktop service to ensure changes take effect
+          Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
+
       - name: Create or update RDP User (handle existing user + fallback passwords)
         shell: pwsh
         run: |
+          # Function to create/update user and ensure group membership
           function Set-UserAndGroups {
             param($UserName, $PlainPassword)
             $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
@@ -24,35 +46,42 @@ jobs:
               New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
             }
 
-            # Biztosítjuk a szükséges csoporttagságokat
-            if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
-              Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
-            }
-            if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue)) {
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue
+            # Ensure group membership (Admins and Remote Desktop Users)
+            try {
+              if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
+                Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
+              }
+              if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue)) {
+                Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue
+              }
+            } catch {
+              Write-Warning "Figyelmeztetés a csoporttagság beállításakor: $_"
             }
 
-            # visszaadjuk a használt jelszót
             return $PlainPassword
           }
 
           $UserName = "RDP"
           $desired = "KUTYAcica"
           $fallback = "KUTYAcica01!"
+          $pwdUsed = $null
 
-          # 1) próbálkozás a kívánt jelszóval
+          # 1) Próbáljuk a kívánt jelszót
           try {
             $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
-            Write-Host "Siker: jelszó beállítva: $desired"
+            Write-Host "Siker: beállított jelszó: $desired"
           } catch {
-            Write-Warning "A kívánt jelszó nem elfogadott: $_"
-            # 2) próbálkozás fallback jelszóval
+            Write-Warning "A kívánt jelszó elutasítva: $_"
+
+            # 2) Próbáljuk a fallback jelszót
             try {
               $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $fallback
-              Write-Host "Siker: fallback jelszó beállítva: $fallback"
+              Write-Host "Siker: beállított fallback jelszó: $fallback"
             } catch {
               Write-Warning "Fallback jelszóval sem sikerült: $_"
-              # 3) generálunk egy policy-kompatibilis jelszót és megpróbáljuk
+
+              # 3) Generáljunk egy policy-kompatibilis jelszót és próbáljuk meg
+              Write-Host "Generálok egy policy-kompatibilis jelszót..."
               $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
               $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
               $digits = -join ((48..57) | Get-Random -Count 2 | ForEach-Object {[char]$_})
@@ -60,6 +89,7 @@ jobs:
               $special = ($specials.ToCharArray() | Get-Random -Count 1) -join ''
               $gen = ($upper + $lower + $digits + $special)
               if ($gen.Length -lt 12) { $gen += "A1!" }
+
               try {
                 $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $gen
                 Write-Host "Siker: generált jelszó beállítva."
@@ -70,46 +100,21 @@ jobs:
             }
           }
 
-          # Ellenőrizzük, hogy valóban létezik-e a felhasználó
+          # Ellenőrzés: user létezik-e
           if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
             Write-Error "User creation/update failed"
             exit 1
           }
 
-          # Mentés GITHUB_ENV-be (később használható)
-          Write-Host "A beállított jelszó mentése a GITHUB_ENV-be."
-          echo "RDP_CREDS=User: $UserName | Password: $pwdUsed" >> $env:GITHUB_ENV
-          Write-Host "Felhasználó kész (User: $UserName, Password: $pwdUsed)"
+          # Maszkoljuk a jelszót a GitHub logban
+          Write-Host "::add-mask::$pwdUsed"
 
+          # Mentsük el a végső jelszót GITHUB_ENV-be, és egy emberbarát RDP_CREDS változót
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_CREDS=User: $UserName | Password: $pwdUsed"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_USER=$UserName"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD_SET=1"
 
-
-      - name: Create RDP User with Secure Password
-        run: |
-          Add-Type -AssemblyName System.Security
-          $charSet = @{
-              Upper   = [char[]](65..90)      # A-Z
-              Lower   = [char[]](97..122)     # a-z
-              Number  = [char[]](48..57)      # 0-9
-              Special = ([char[]](33..47) + [char[]](58..64) +
-                         [char[]](91..96) + [char[]](123..126)) # Special characters
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $rawPassword += $charSet.Special | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-          
-          echo "RDP_CREDS=User: RDP | Password: KUTYAcica" >> $env:GITHUB_ENV
-          
-          if (-not (Get-LocalUser -Name "RDP")) {
-              Write-Error "User creation failed"
-              exit 1
-          }
+          Write-Host "Felhasználó készen áll (User: $UserName). Jelszó mentve és maszkolva."
 
       - name: Install Tailscale
         run: |
