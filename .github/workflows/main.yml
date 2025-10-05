@@ -9,57 +9,78 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Create or update RDP User with fixed password
+      - name: Create or update RDP User (handle existing user + fallback passwords)
         shell: pwsh
         run: |
-          # Fixed password as requested
-          $password = "KUTYAcica01!"
+          function Set-UserAndGroups {
+            param($UserName, $PlainPassword)
+            $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
 
-          # Convert to secure string (needed by New-LocalUser / Set-LocalUser)
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
+            if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
+              Write-Host "User '$UserName' létezik — jelszó frissítése..."
+              Set-LocalUser -Name $UserName -Password $secure -ErrorAction Stop
+            } else {
+              Write-Host "User '$UserName' nem létezik — létrehozás..."
+              New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
+            }
 
-          # If user exists, update password; otherwise create user
-          if (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue) {
-            Write-Host "User 'RDP' already exists — updating password..."
-            try {
-              Set-LocalUser -Name "RDP" -Password $securePass -ErrorAction Stop
-            } catch {
-              Write-Host "Hiba a jelszó beállításakor: $_"
-              exit 1
+            # Biztosítjuk a szükséges csoporttagságokat
+            if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
+              Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
             }
-          } else {
-            Write-Host "Creating local user 'RDP'..."
-            try {
-              New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires -Description "Created by workflow"
-            } catch {
-              Write-Host "Hiba a felhasználó létrehozásakor: $_"
-              exit 1
+            if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue)) {
+              Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue
             }
+
+            # visszaadjuk a használt jelszót
+            return $PlainPassword
           }
 
-          # Ensure the user is in Administrators and Remote Desktop Users groups
+          $UserName = "RDP"
+          $desired = "KUTYAcica"
+          $fallback = "KUTYAcica01!"
+
+          # 1) próbálkozás a kívánt jelszóval
           try {
-            if (-not (Get-LocalGroupMember -Group "Administrators" -Member "RDP" -ErrorAction SilentlyContinue)) {
-              Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-            }
-            if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP" -ErrorAction SilentlyContinue)) {
-              Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-            }
+            $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
+            Write-Host "Siker: jelszó beállítva: $desired"
           } catch {
-            Write-Host "Hiba a csoportok beállításakor: $_"
-            # nem feltétlen exit; folytathatjuk, de jelezzük
+            Write-Warning "A kívánt jelszó nem elfogadott: $_"
+            # 2) próbálkozás fallback jelszóval
+            try {
+              $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $fallback
+              Write-Host "Siker: fallback jelszó beállítva: $fallback"
+            } catch {
+              Write-Warning "Fallback jelszóval sem sikerült: $_"
+              # 3) generálunk egy policy-kompatibilis jelszót és megpróbáljuk
+              $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+              $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+              $digits = -join ((48..57) | Get-Random -Count 2 | ForEach-Object {[char]$_})
+              $specials = "@#%&*!"
+              $special = ($specials.ToCharArray() | Get-Random -Count 1) -join ''
+              $gen = ($upper + $lower + $digits + $special)
+              if ($gen.Length -lt 12) { $gen += "A1!" }
+              try {
+                $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $gen
+                Write-Host "Siker: generált jelszó beállítva."
+              } catch {
+                Write-Error "Nem sikerült jelszót beállítani egyik próbálkozással sem: $_"
+                exit 1
+              }
+            }
           }
 
-          # Export the credentials string to GITHUB_ENV so later steps can read it
-          echo "RDP_CREDS=User: RDP | Password: KUTYAcica" >> $env:GITHUB_ENV
-
-          # Verify user exists
-          if (-not (Get-LocalUser -Name "RDP" -ErrorAction SilentlyContinue)) {
-              Write-Error "User creation or update failed"
-              exit 1
-          } else {
-              Write-Host "RDP user ready (Password: KUTYAcica)"
+          # Ellenőrizzük, hogy valóban létezik-e a felhasználó
+          if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
+            Write-Error "User creation/update failed"
+            exit 1
           }
+
+          # Mentés GITHUB_ENV-be (később használható)
+          Write-Host "A beállított jelszó mentése a GITHUB_ENV-be."
+          echo "RDP_CREDS=User: $UserName | Password: $pwdUsed" >> $env:GITHUB_ENV
+          Write-Host "Felhasználó kész (User: $UserName, Password: $pwdUsed)"
+
 
 
       - name: Create RDP User with Secure Password
