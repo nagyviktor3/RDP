@@ -87,69 +87,79 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-      - name: Install AnyDesk, set unattended password and print connection info
+      - name: Install RustDesk, set password, and print ID+masked password
         shell: pwsh
         run: |
-          # letöltés
-          $url = "https://download.anydesk.com/AnyDesk.exe"
-          $installer = "$env:TEMP\AnyDesk.exe"
-          Write-Host "Downloading AnyDesk..."
-          Invoke-WebRequest -Uri $url -OutFile $installer
+          # --------- 1) Letöltés -----------
+          $url = "https://github.com/rustdesk/rustdesk/releases/latest/download/RustDesk.exe"
+          $installer = "$env:TEMP\RustDesk.exe"
+          Write-Host "Letöltés: $url"
+          Invoke-WebRequest -Uri $url -OutFile $installer -UseBasicParsing
 
-          # telepítés silent
-          Write-Host "Installing AnyDesk silently..."
-          Start-Process -FilePath $installer -ArgumentList "/install","/silent","/norestart" -Wait
+          # --------- 2) Telepítés silent -----------
+          Write-Host "Silent telepítés..."
+          Start-Process -FilePath $installer -ArgumentList "--silent-install" -Wait
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
-          # keresés a telepített futtatható után
-          $anydeskExe = Get-ChildItem -Path "C:\Program Files*","C:\Program Files (x86)*" -Filter "AnyDesk.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-          if ($anydeskExe) { $anydeskExe = $anydeskExe.FullName } else { 
-            Write-Error "AnyDesk futtatható nem található a szokásos helyeken."
+          # --------- 3) Megkeressük a telepített futtathatót -----------
+          $possible = Get-ChildItem -Path "C:\Program Files*","C:\Program Files (x86)*" -Filter "rustdesk.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $possible) {
+            Write-Error "RustDesk nem található a várt helyeken. Telepítés sikertelen."
             exit 1
           }
+          $rustdeskExe = $possible.FullName
+          Write-Host "RustDesk helye: $rustdeskExe"
 
-          Write-Host "AnyDesk megtalálva: $anydeskExe"
-
-          # jelszó a Secrets-ből
-          if (-not $env:ANYDESK_PASSWORD) {
-            Write-Error "ANYDESK_PASSWORD secret nincs beállítva!"
+          # --------- 4) Jelszó (secret) ellenőrzése -----------
+          if (-not $env:RUSTDESK_PASSWORD) {
+            Write-Error "RUSTDESK_PASSWORD secret nincs beállítva! Add meg a repo Secrets-ben."
             exit 1
           }
-          $pwd = $env:ANYDESK_PASSWORD
+          $pwd = $env:RUSTDESK_PASSWORD
 
-          # maszkolás a GitHub Actions logban (így nem jelenik meg nyíltan)
+          # Maszkoljuk a jelszót a GitHub logban
           Write-Host "::add-mask::$pwd"
 
-          # set unattended password (pipe a jelszót)
-          Write-Host "Beállítom az unattended jelszót..."
-          cmd /c "echo $pwd | `"$anydeskExe`" --set-password" 2>$null
+          # --------- 5) Beállítjuk az unattended jelszót -----------
+          Write-Host "RustDesk unattended password beállítása..."
+          # rustdesk.exe --password <pwd>
+          & $rustdeskExe --password $pwd
+          Start-Sleep -Seconds 2
 
+          # --------- 6) Indítsuk el a RustDesk klienst (szükséges lehet az ID lekéréséhez) -----------
+          Write-Host "RustDesk elindítása (háttérben)..."
+          Start-Process -FilePath $rustdeskExe -ArgumentList "--minimized" -WorkingDirectory (Split-Path $rustdeskExe) | Out-Null
           Start-Sleep -Seconds 3
 
-          # lekérjük az AnyDesk ID-t
-          Write-Host "Lekérem az AnyDesk ID-t..."
-          $id = & "$anydeskExe" --get-id 2>$null
+          # --------- 7) Lekérjük az ID-t -----------
+          Write-Host "RustDesk ID lekérése..."
+          $id = & $rustdeskExe --get-id 2>$null
           if (-not $id) {
-            Write-Warning "Nem kaptunk ID-t a CLI-ből. Lehet GUI-only a verzió — ellenőrizd a runner asztalát."
-            $id = "UNKNOWN"
+            Write-Warning "Nem sikerült lekérni az ID-t a CLI-vel. Megpróbálom várni és újraolvasni..."
+            Start-Sleep -Seconds 4
+            $id = & $rustdeskExe --get-id 2>$null
           }
-          $id = $id.Trim()
 
-          # maszkoljuk az ID-t is a logokban
-          if ($id -ne "UNKNOWN") { Write-Host "::add-mask::$id" }
+          if (-not $id) {
+            Write-Error "ID lekérése sikertelen. Lehet a verzió nem támogatja a CLI-t vagy a kliens még nem generálta az ID-t."
+            # továbbra is kilépni nem feltétlen szükséges — de jelezzük
+            $id = "UNKNOWN"
+          } else {
+            $id = $id.Trim()
+            # maszkoljuk az ID-t is a logokban
+            Write-Host "::add-mask::$id"
+          }
 
-          # mentsük env-be (felhasználhatod későbbi lépésekben)
-          echo "ANYDESK_ID=$id" >> $env:GITHUB_ENV
-          # nem írjuk ki a jelszót nyíltan — csak jelzés
-          echo "ANYDESK_PASSWORD_SET=1" >> $env:GITHUB_ENV
+          # --------- 8) Mentés env-be és olvasható összegzés -----------
+          echo "RUSTDESK_ID=$id" >> $env:GITHUB_ENV
+          echo "RUSTDESK_PASSWORD_SET=1" >> $env:GITHUB_ENV
 
-          # olvasható összefoglaló (a tényleges jelszó NEM jelenik meg, mert maszkolva van)
           Write-Host ""
-          Write-Host "=== ANYDESK HOZZÁFÉRÉS ==="
-          Write-Host "ID: $id"
-          Write-Host "Password: (a jelszó a repo secret: ANYDESK_PASSWORD) - a logban maszkolva."
-          Write-Host "Tip: ha szeretnéd itt nyíltan látni a jelszót, add hozzá manuálisan a Write-Host ""Password: $pwd"" sort — de ez **nem biztonságos**!"
+          Write-Host "=== RUSTDESK HOZZÁFÉRÉS ==="
+          Write-Host "ID (connect code): $id"
+          Write-Host "Password: (a jelszó a repo secret: RUSTDESK_PASSWORD) - a logban maszkolva."
           Write-Host "==========================="
+
 
 
 
