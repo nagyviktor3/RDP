@@ -98,8 +98,15 @@ jobs:
 
           # --------- 2) Telepítés silent -----------
           Write-Host "Silent telepítés..."
-          Start-Process -FilePath $installer -ArgumentList "--silent-install"
-          Start-Sleep -Seconds 15
+          Write-Host "Silent telepítés (no wait, force continue)..."
+          $p = Start-Process -FilePath $installer -ArgumentList "--silent-install" -PassThru
+          Start-Sleep -Seconds 20
+          if (!$p.HasExited) {
+              Write-Host "Telepítő még fut, leállítom..."
+              try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
+          }
+          Write-Host "Telepítés befejezve (folytatás)..."
+
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
           # --------- 3) Megkeressük a telepített futtathatót -----------
