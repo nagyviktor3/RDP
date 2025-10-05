@@ -87,7 +87,7 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
 
-      - name: Install RustDesk 1.4.2, set fixed password, and print ID
+      - name: Install RustDesk 1.4.2, set fixed password, print ID and keep alive
         shell: pwsh
         run: |
           # --------- 1) Letöltés -----------
@@ -105,14 +105,14 @@ jobs:
               try { Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue } catch {}
           }
           Write-Host "Telepítés befejezve (folytatás)..."
-          Remove-Item $installer -Force -ErrorAction SilentlyContinue
 
-          # --------- 3) Keresés a telepített RustDesk-re -----------
+          # --------- 3) Keresés a RustDesk futtathatóra + fallback -----------
           Write-Host "Keresem a RustDesk futtathatót..."
           $searchPaths = @(
             "C:\Program Files*",
             "C:\Program Files (x86)*",
             "C:\Users\runneradmin\AppData\Local",
+            "C:\Users\runneradmin\AppData\Local\Programs",
             "C:\Users\runneradmin\AppData\Roaming"
           )
           $possible = $null
@@ -123,12 +123,20 @@ jobs:
               break
             }
           }
+
           if (-not $possible) {
-            Write-Error "❌ RustDesk nem található egyik ismert helyen sem!"
-            exit 1
+            Write-Warning "⚠️ Telepített RustDesk nem található, az installer fájlt fogom használni."
+            if (Test-Path $installer) {
+              $rustdeskExe = $installer
+              Write-Host "✅ Használom a letöltött futtathatót: $rustdeskExe"
+            } else {
+              Write-Error "❌ RustDesk nem található se telepítve, se az ideiglenes mappában!"
+              exit 1
+            }
+          } else {
+            $rustdeskExe = $possible.FullName
+            Write-Host "✅ RustDesk helye: $rustdeskExe"
           }
-          $rustdeskExe = $possible.FullName
-          Write-Host "✅ RustDesk helye: $rustdeskExe"
 
           # --------- 4) Fix jelszó beállítása -----------
           $pwd = "KUTYAcica01!"
@@ -136,7 +144,11 @@ jobs:
           & $rustdeskExe --password $pwd
           Start-Sleep -Seconds 3
 
-          # --------- 5) RustDesk ID lekérése -----------
+          # --------- 5) RustDesk elindítása és ID lekérése -----------
+          Write-Host "RustDesk elindítása (háttérben)..."
+          Start-Process -FilePath $rustdeskExe -ArgumentList "--minimized" -WorkingDirectory (Split-Path $rustdeskExe)
+          Start-Sleep -Seconds 5
+
           Write-Host "RustDesk ID lekérése..."
           $id = & $rustdeskExe --get-id 2>$null
           if (-not $id) {
@@ -153,10 +165,18 @@ jobs:
 
           # --------- 6) Eredmény kiírás -----------
           Write-Host ""
-          Write-Host "=== RUSTDESK HOZZÁFÉRÉS ==="
+          Write-Host "=== 🖥️ RUSTDESK HOZZÁFÉRÉS ==="
           Write-Host "💻 ID (connect code): $id"
           Write-Host "🔑 Password: KUTYAcica01!"
-          Write-Host "==========================="
+          Write-Host "=============================="
+
+          # --------- 7) Keep alive 1 óráig -----------
+          Write-Host "A gép 1 óráig aktív marad (60 perc)..."
+          for ($i = 1; $i -le 60; $i++) {
+            Write-Host "⏳ RustDesk aktív - eltelt $i perc / 60"
+            Start-Sleep -Seconds 60
+          }
+          Write-Host "⏹️ Idő lejárt, a workflow most leáll."
 
 
 
