@@ -185,60 +185,87 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-goodies tightvncserver git python3-pip wget unzip x11vnc
           sudo pip3 install --upgrade websockify
 
-      - name: Start insecure no-password noVNC exposed via ngrok (INSECURE — public)
+      - name: Start insecure no-password noVNC exposed via ngrok (INSECURE) - improved
         shell: bash
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
           NOVNC_PORT: 6080
         run: |
-          set -e
+          set -euo pipefail
           USER_HOME=/home/$(whoami)
           mkdir -p $USER_HOME/.vnc
-
-          # Start a desktop (tightvncserver creates display :1 if needed)
           pkill Xtightvnc || true
+
+          # start a display (tightvncserver may create :1)
           tightvncserver :1 -geometry 1280x800 -depth 24 || true
           sleep 2
 
-          # Start x11vnc with NO password (INSECURE)
+          # start x11vnc (no password)
           nohup x11vnc -display :1 -nopw -forever -shared -rfbport 5901 > /tmp/x11vnc.log 2>&1 &
+          sleep 1
 
-          # Install noVNC web UI if missing
+          # ensure websockify + novnc webroot
           if [ ! -d /usr/share/novnc ]; then
             git clone https://github.com/novnc/noVNC.git /tmp/novnc_tmp
             sudo mkdir -p /usr/share/novnc
             sudo cp -r /tmp/novnc_tmp/. /usr/share/novnc
           fi
-
-          # Start websockify / noVNC
           nohup websockify --web=/usr/share/novnc ${NOVNC_PORT} localhost:5901 > /tmp/novnc.log 2>&1 &
+          sleep 1
 
-          # If NGROK_TOKEN not provided, print local URL and exit
-          if [ -z "$NGROK_TOKEN" ]; then
-            echo "NGROK_TOKEN nincs beállítva. noVNC helyi URL: http://localhost:${NOVNC_PORT}/vnc.html"
-            tail -n +1 /tmp/novnc.log || true
+          # Wait until 5901 is listening (max 20s), else print debug and exit non-zero
+          echo "Waiting for VNC port 5901 to be listening..."
+          for i in {1..20}; do
+            if ss -tunlp | grep -q ":5901"; then
+              echo "5901 is listening."
+              break
+            fi
+            echo "Waiting... ($i)"
+            sleep 1
+            if [ $i -eq 20 ]; then
+              echo "ERROR: 5901 not listening after wait. Dumping logs:"
+              echo "---- /tmp/x11vnc.log ----"
+              tail -n 200 /tmp/x11vnc.log || true
+              echo "---- /tmp/novnc.log ----"
+              tail -n 200 /tmp/novnc.log || true
+              ss -tunlp || true
+              exit 1
+            fi
+          done
+
+          # optional: test local web root
+          echo "Testing local noVNC page availability..."
+          curl -sSf "http://127.0.0.1:${NOVNC_PORT}/vnc.html" >/dev/null || {
+            echo "ERROR: local noVNC page not available; dumping /tmp/novnc.log"
+            tail -n 200 /tmp/novnc.log || true
+          }
+
+          # If NGROK_TOKEN is provided, setup ngrok
+          if [ -z "${NGROK_TOKEN:-}" ]; then
+            echo "NGROK_TOKEN not set. local noVNC: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
             exit 0
           fi
 
-          # Download and start ngrok to create a PUBLIC HTTPS tunnel to noVNC
+          # install ngrok and start
           wget -q -O /tmp/ngrok.zip "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
           unzip -o /tmp/ngrok.zip -d /tmp/
           sudo mv /tmp/ngrok /usr/local/bin/ngrok
           sudo chmod +x /usr/local/bin/ngrok
           /usr/local/bin/ngrok authtoken "$NGROK_TOKEN"
           nohup /usr/local/bin/ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
-
-          # Wait and print ngrok public URL
           sleep 4
-          if command -v curl >/dev/null 2>&1; then
-            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
-            echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
-          else
-            echo "Nyisd meg a /tmp/ngrok.log fájlt az URL-ért."
-            tail -n 50 /tmp/ngrok.log || true
-          fi
 
-          echo "INSECURE: noVNC elindítva jelszó nélkül! Ellenőrizd: /tmp/novnc.log és /tmp/x11vnc.log"
+          # print ngrok public URL
+          PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
+          echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
+          echo "PUBLIC_NOVNC=${PUB}/vnc.html" >> $GITHUB_OUTPUT
+
+          # show short logs
+          echo "=== last lines of logs ==="
+          tail -n 40 /tmp/x11vnc.log || true
+          tail -n 40 /tmp/novnc.log || true
+          tail -n 40 /tmp/ngrok.log || true
+
 
       - name: Install Tailscale and connect (Ubuntu)
         shell: bash
