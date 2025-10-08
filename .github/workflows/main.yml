@@ -12,7 +12,7 @@ jobs:
       - name: Configure Core RDP Settings
         shell: pwsh
         run: |
-          # (a te eredeti RDP beállításaid itt)
+          # Enable Remote Desktop and disable NLA if needed
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
@@ -27,8 +27,69 @@ jobs:
       - name: Create or update RDP User (handle existing user + fallback passwords)
         shell: pwsh
         run: |
-          # (a te teljes felhasználó létrehozó blokkod jön ide — nem változtattam rajta)
-          # ... (hagyd itt az eredeti PowerShell-edet) ...
+          # (beilleszd ide a korábbi Create/Update user blokkodat pontosan ahogy van)
+          # --- kezdődik a te blokkod ---
+          function Set-UserAndGroups {
+            param($UserName, $PlainPassword)
+            $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
+            if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
+              Write-Host "User '$UserName' létezik — jelszó frissítése..."
+              Set-LocalUser -Name $UserName -Password $secure -ErrorAction Stop
+            } else {
+              Write-Host "User '$UserName' nem létezik — létrehozás..."
+              New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
+            }
+            try {
+              if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
+                Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
+              }
+              if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue)) {
+                Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue
+              }
+            } catch {
+              Write-Warning "Figyelmeztetés a csoporttagság beállításakor: $_"
+            }
+            return $PlainPassword
+          }
+          $UserName = "RDP"
+          $desired = "KUTYAcica"
+          $fallback = "KUTYAcica01!"
+          $pwdUsed = $null
+          try {
+            $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
+            Write-Host "Siker: beállított jelszó: $desired"
+          } catch {
+            Write-Warning "A kívánt jelszó elutasítva: $_"
+            try {
+              $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $fallback
+              Write-Host "Siker: beállított fallback jelszó: $fallback"
+            } catch {
+              Write-Warning "Fallback jelszóval sem sikerült: $_"
+              Write-Host "Generálok egy policy-kompatibilis jelszót..."
+              $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+              $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
+              $digits = -join ((48..57) | Get-Random -Count 2 | ForEach-Object {[char]$_})
+              $specials = "@#%&*!"
+              $special = ($specials.ToCharArray() | Get-Random -Count 1) -join ''
+              $gen = ($upper + $lower + $digits + $special)
+              if ($gen.Length -lt 12) { $gen += "A1!" }
+              try {
+                $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $gen
+                Write-Host "Siker: generált jelszó beállítva."
+              } catch {
+                Write-Error "Nem sikerült jelszót beállítani egyik próbálkozással sem: $_"
+                exit 1
+              }
+            }
+          }
+          if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
+            Write-Error "User creation/update failed"
+            exit 1
+          }
+          Write-Host "::add-mask::$pwdUsed"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_CREDS=$UserName:$pwdUsed"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_USER=$UserName"
+          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD_SET=1"
           Write-Host "Felhasználó készen."
 
       - name: Install Tailscale
@@ -40,7 +101,7 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection
+      - name: Establish Tailscale Connection (Windows)
         shell: pwsh
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
@@ -68,7 +129,9 @@ jobs:
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
-          Write-Host "Password: $(echo $env:RDP_CREDS)"
+          # take masked credentials from env
+          $creds = (Get-Content $env:GITHUB_ENV | Select-String -Pattern "RDP_CREDS=").ToString()
+          Write-Host "Password: (masked in env)"
           Write-Host "==================`n"
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
@@ -76,14 +139,14 @@ jobs:
           }
 
   novnc:
-    needs: secure-rdp
+    # no 'needs' here - fut párhuzamosan
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      VNC_PASSWORD: "vncpass123"      # IDE írd a kívánt VNC jelszót (változtasd erősre)
+      VNC_PASSWORD: "vncpass123"   # változtasd erősre
       NOVNC_PORT: "6080"
     steps:
-      - name: Checkout (not required but handy)
+      - name: Checkout
         uses: actions/checkout@v4
 
       - name: Install deps and XFCE + TightVNC + websockify
@@ -98,16 +161,14 @@ jobs:
         run: |
           USER_HOME=/home/$(whoami)
           mkdir -p $USER_HOME/.vnc
-          # create the vnc passwd file (vncpasswd -f outputs encrypted passwd to stdout)
           printf "%s\n" "$VNC_PASSWORD" "$VNC_PASSWORD" "" | vncpasswd -f > $USER_HOME/.vnc/passwd || true
           chmod 600 $USER_HOME/.vnc/passwd
-          export DISPLAY_NUM=":1"
-          # kill existing and start new
+          DISPLAY_NUM=":1"
           pkill Xtightvnc || true
           tightvncserver $DISPLAY_NUM -geometry 1280x800 -depth 24
           sleep 2
 
-      - name: Install noVNC (clone) and start websockify
+      - name: Install noVNC and start websockify
         shell: bash
         run: |
           if [ ! -d /usr/share/novnc ]; then
@@ -115,17 +176,15 @@ jobs:
             sudo mkdir -p /usr/share/novnc
             sudo cp -r /tmp/novnc_tmp/. /usr/share/novnc
           fi
-          # start websockify -> proxy websockets on NOVNC_PORT to VNC port 5901
           nohup websockify ${NOVNC_PORT} localhost:5901 --web /usr/share/novnc > /tmp/novnc.log 2>&1 &
           sleep 2
           echo "noVNC should be running; check /tmp/novnc.log"
 
-      - name: Install Tailscale on Ubuntu and join tailnet
+      - name: Install Tailscale and connect (Ubuntu)
         shell: bash
         run: |
           curl -fsSL https://tailscale.com/install.sh | sh
           sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-novnc-$GITHUB_RUN_ID
-          # wait for IP
           for i in {1..10}; do
             TSIP=$(tailscale ip -4 || true)
             if [ -n "$TSIP" ]; then echo "TSIP=$TSIP" && break; fi
@@ -134,20 +193,14 @@ jobs:
           if [ -z "$TSIP" ]; then echo "Tailscale IP not assigned"; exit 1; fi
           echo "TAILSCALE_IP=$TSIP" >> $GITHUB_ENV
 
-      - name: Open firewall (if needed) and output noVNC URL
+      - name: Output noVNC URL
         shell: bash
         run: |
-          # On GitHub-hosted runners ufw/firewall typically not restrictive, but show the URL
           echo "noVNC should be reachable at: http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html"
           echo "NOVNC_URL=http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html" >> $GITHUB_OUTPUT
 
       - name: Keep novnc job alive and show logs
         shell: bash
         run: |
-          echo "=== noVNC logs ==="
-          tail -n +1 /tmp/novnc.log || true
-          echo "noVNC URL: $(cat /github/workflow/output | sed -n 's/.*NOVNC_URL=//p' || true)"
-          # keep runner alive until manually cancelled
-          while true; do
-            sleep 300
-          done
+          echo "=== noVNC logs ===" && tail -n +1 /tmp/novnc.log || true
+          while true; do sleep 300; done
