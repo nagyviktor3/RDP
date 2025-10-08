@@ -139,14 +139,40 @@ jobs:
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
-          # take masked credentials from env
-          $creds = (Get-Content $env:GITHUB_ENV | Select-String -Pattern "RDP_CREDS=").ToString()
-          Write-Host "Password: (masked in env)"
-          Write-Host "==================`n"
-          while ($true) {
-              Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
-              Start-Sleep -Seconds 300
+
+          # Próbáljuk beolvasni a GITHUB_ENV fájlból (ha létezik) a RDP_CREDS sort
+          $creds = $null
+          if (Test-Path $env:GITHUB_ENV) {
+            $line = Get-Content -Path $env:GITHUB_ENV | Where-Object { $_ -match '^RDP_CREDS=' } | Select-Object -First 1
+            if ($line) {
+              # eltávolítjuk a kulcsot, csak a "User:Pass" részt hagyjuk meg
+              $creds = $line -replace '^RDP_CREDS=', ''
+            }
           }
+
+          # fallback: ha nem találtunk, használjuk a környezeti változót (ha be van állítva)
+          if (-not $creds -or $creds -eq '') {
+            if ($env:RDP_CREDS) { $creds = $env:RDP_CREDS }
+          }
+
+          if ($creds) {
+            # NE írd ki a jelszót — csak mutassuk, hogy van érték (maszkolva)
+            Write-Host "Password: (masked) — stored in RDP_CREDS"
+            # Ha nagyon kell, ki tudsz belőle egy részt mutatni, pl. csak a felhasználó:
+            $userPart = ($creds -split ':')[0]
+            Write-Host "User from stored creds: $userPart"
+          } else {
+            Write-Host "Password: (not available)"
+          }
+
+          Write-Host "==================`n"
+
+          # keep runner alive
+          while ($true) {
+            Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            Start-Sleep -Seconds 300
+          }
+
 
   novnc:
     # no 'needs' here - fut párhuzamosan
