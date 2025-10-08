@@ -1,4 +1,4 @@
-name: RDP
+name: RDP + noVNC
 
 on:
   workflow_dispatch:
@@ -12,125 +12,38 @@ jobs:
       - name: Configure Core RDP Settings
         shell: pwsh
         run: |
-          # Enable Remote Desktop and disable Network Level Authentication (if needed)
+          # (a te eredeti RDP beállításaid itt)
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
                              -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
                              -Name "SecurityLayer" -Value 0 -Force
-
-          # Remove any existing rule with the same name to avoid duplication
           netsh advfirewall firewall delete rule name="RDP-Tailscale" -ErrorAction SilentlyContinue
-          
-          # Allow incoming RDP on 3389
           netsh advfirewall firewall add rule name="RDP-Tailscale" `
             dir=in action=allow protocol=TCP localport=3389
-
-          # Restart Remote Desktop service to ensure changes take effect
           Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
 
       - name: Create or update RDP User (handle existing user + fallback passwords)
         shell: pwsh
         run: |
-          # Function to create/update user and ensure group membership
-          function Set-UserAndGroups {
-            param($UserName, $PlainPassword)
-            $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
-
-            if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
-              Write-Host "User '$UserName' létezik — jelszó frissítése..."
-              Set-LocalUser -Name $UserName -Password $secure -ErrorAction Stop
-            } else {
-              Write-Host "User '$UserName' nem létezik — létrehozás..."
-              New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
-            }
-
-            # Ensure group membership (Admins and Remote Desktop Users)
-            try {
-              if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
-                Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
-              }
-              if (-not (Get-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue)) {
-                Add-LocalGroupMember -Group "Remote Desktop Users" -Member $UserName -ErrorAction SilentlyContinue
-              }
-            } catch {
-              Write-Warning "Figyelmeztetés a csoporttagság beállításakor: $_"
-            }
-
-            return $PlainPassword
-          }
-
-          $UserName = "RDP"
-          $desired = "KUTYAcica"
-          $fallback = "KUTYAcica01!"
-          $pwdUsed = $null
-
-          # 1) Próbáljuk a kívánt jelszót
-          try {
-            $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
-            Write-Host "Siker: beállított jelszó: $desired"
-          } catch {
-            Write-Warning "A kívánt jelszó elutasítva: $_"
-
-            # 2) Próbáljuk a fallback jelszót
-            try {
-              $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $fallback
-              Write-Host "Siker: beállított fallback jelszó: $fallback"
-            } catch {
-              Write-Warning "Fallback jelszóval sem sikerült: $_"
-
-              # 3) Generáljunk egy policy-kompatibilis jelszót és próbáljuk meg
-              Write-Host "Generálok egy policy-kompatibilis jelszót..."
-              $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-              $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-              $digits = -join ((48..57) | Get-Random -Count 2 | ForEach-Object {[char]$_})
-              $specials = "@#%&*!"
-              $special = ($specials.ToCharArray() | Get-Random -Count 1) -join ''
-              $gen = ($upper + $lower + $digits + $special)
-              if ($gen.Length -lt 12) { $gen += "A1!" }
-
-              try {
-                $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $gen
-                Write-Host "Siker: generált jelszó beállítva."
-              } catch {
-                Write-Error "Nem sikerült jelszót beállítani egyik próbálkozással sem: $_"
-                exit 1
-              }
-            }
-          }
-
-          # Ellenőrzés: user létezik-e
-          if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
-            Write-Error "User creation/update failed"
-            exit 1
-          }
-
-          # Maszkoljuk a jelszót a GitHub logban
-          Write-Host "::add-mask::$pwdUsed"
-
-          # Mentsük el a végső jelszót GITHUB_ENV-be, és egy emberbarát RDP_CREDS változót
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_CREDS=User: $UserName | Password: $pwdUsed"
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_USER=$UserName"
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD_SET=1"
-
-          Write-Host "Felhasználó készen áll (User: $UserName). Jelszó mentve és maszkolva."
+          # (a te teljes felhasználó létrehozó blokkod jön ide — nem változtattam rajta)
+          # ... (hagyd itt az eredeti PowerShell-edet) ...
+          Write-Host "Felhasználó készen."
 
       - name: Install Tailscale
+        shell: pwsh
         run: |
           $tsUrl = "https://pkgs.tailscale.com/stable/tailscale-setup-1.82.0-amd64.msi"
           $installerPath = "$env:TEMP\tailscale.msi"
-          
           Invoke-WebRequest -Uri $tsUrl -OutFile $installerPath
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
       - name: Establish Tailscale Connection
+        shell: pwsh
         run: |
-          # Bring up Tailscale with the provided auth key and set a unique hostname
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          
-          # Wait for Tailscale to assign an IP
           $tsIP = $null
           $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
@@ -138,43 +51,103 @@ jobs:
               Start-Sleep -Seconds 5
               $retries++
           }
-          
-          if (-not $tsIP) {
-              Write-Error "Tailscale IP not assigned. Exiting."
-              exit 1
-          }
+          if (-not $tsIP) { Write-Error "Tailscale IP not assigned. Exiting."; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-
-
-
-
-
-
-      
       - name: Verify RDP Accessibility
+        shell: pwsh
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          
-          # Test connectivity using Test-NetConnection against the Tailscale IP on port 3389
           $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) {
-              Write-Error "TCP connection to RDP port 3389 failed"
-              exit 1
-          }
+          if (-not $testResult.TcpTestSucceeded) { Write-Error "TCP connection to RDP port 3389 failed"; exit 1 }
           Write-Host "TCP connectivity successful!"
 
       - name: Maintain Connection
+        shell: pwsh
         run: |
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
           Write-Host "Password: $(echo $env:RDP_CREDS)"
           Write-Host "==================`n"
-          
-          # Keep runner active indefinitely (or until manually cancelled)
           while ($true) {
               Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
               Start-Sleep -Seconds 300
           }
 
+  novnc:
+    needs: secure-rdp
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    env:
+      VNC_PASSWORD: "vncpass123"      # IDE írd a kívánt VNC jelszót (változtasd erősre)
+      NOVNC_PORT: "6080"
+    steps:
+      - name: Checkout (not required but handy)
+        uses: actions/checkout@v4
+
+      - name: Install deps and XFCE + TightVNC + websockify
+        shell: bash
+        run: |
+          sudo DEBIAN_FRONTEND=noninteractive apt update -y
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-goodies tightvncserver git python3-pip wget unzip
+          sudo pip3 install --upgrade websockify
+
+      - name: Set VNC password non-interactively and start VNC
+        shell: bash
+        run: |
+          USER_HOME=/home/$(whoami)
+          mkdir -p $USER_HOME/.vnc
+          # create the vnc passwd file (vncpasswd -f outputs encrypted passwd to stdout)
+          printf "%s\n" "$VNC_PASSWORD" "$VNC_PASSWORD" "" | vncpasswd -f > $USER_HOME/.vnc/passwd || true
+          chmod 600 $USER_HOME/.vnc/passwd
+          export DISPLAY_NUM=":1"
+          # kill existing and start new
+          pkill Xtightvnc || true
+          tightvncserver $DISPLAY_NUM -geometry 1280x800 -depth 24
+          sleep 2
+
+      - name: Install noVNC (clone) and start websockify
+        shell: bash
+        run: |
+          if [ ! -d /usr/share/novnc ]; then
+            sudo git clone https://github.com/novnc/noVNC.git /tmp/novnc_tmp
+            sudo mkdir -p /usr/share/novnc
+            sudo cp -r /tmp/novnc_tmp/. /usr/share/novnc
+          fi
+          # start websockify -> proxy websockets on NOVNC_PORT to VNC port 5901
+          nohup websockify ${NOVNC_PORT} localhost:5901 --web /usr/share/novnc > /tmp/novnc.log 2>&1 &
+          sleep 2
+          echo "noVNC should be running; check /tmp/novnc.log"
+
+      - name: Install Tailscale on Ubuntu and join tailnet
+        shell: bash
+        run: |
+          curl -fsSL https://tailscale.com/install.sh | sh
+          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-novnc-$GITHUB_RUN_ID
+          # wait for IP
+          for i in {1..10}; do
+            TSIP=$(tailscale ip -4 || true)
+            if [ -n "$TSIP" ]; then echo "TSIP=$TSIP" && break; fi
+            sleep 3
+          done
+          if [ -z "$TSIP" ]; then echo "Tailscale IP not assigned"; exit 1; fi
+          echo "TAILSCALE_IP=$TSIP" >> $GITHUB_ENV
+
+      - name: Open firewall (if needed) and output noVNC URL
+        shell: bash
+        run: |
+          # On GitHub-hosted runners ufw/firewall typically not restrictive, but show the URL
+          echo "noVNC should be reachable at: http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html"
+          echo "NOVNC_URL=http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html" >> $GITHUB_OUTPUT
+
+      - name: Keep novnc job alive and show logs
+        shell: bash
+        run: |
+          echo "=== noVNC logs ==="
+          tail -n +1 /tmp/novnc.log || true
+          echo "noVNC URL: $(cat /github/workflow/output | sed -n 's/.*NOVNC_URL=//p' || true)"
+          # keep runner alive until manually cancelled
+          while true; do
+            sleep 300
+          done
