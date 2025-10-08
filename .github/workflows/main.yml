@@ -27,18 +27,18 @@ jobs:
       - name: Create or update RDP User (handle existing user + fallback passwords)
         shell: pwsh
         run: |
-          # (beilleszd ide a korábbi Create/Update user blokkodat pontosan ahogy van)
-          # --- kezdődik a te blokkod ---
           function Set-UserAndGroups {
-            param($UserName, $PlainPassword)
-            $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
-            if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
+          param($UserName, $PlainPassword)
+          $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
+    
+          if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
               Write-Host "User '$UserName' létezik — jelszó frissítése..."
               Set-LocalUser -Name $UserName -Password $secure -ErrorAction Stop
             } else {
               Write-Host "User '$UserName' nem létezik — létrehozás..."
               New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
             }
+      
             try {
               if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
                 Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
@@ -49,12 +49,15 @@ jobs:
             } catch {
               Write-Warning "Figyelmeztetés a csoporttagság beállításakor: $_"
             }
+      
             return $PlainPassword
           }
+      
           $UserName = "RDP"
           $desired = "KUTYAcica"
           $fallback = "KUTYAcica01!"
           $pwdUsed = $null
+      
           try {
             $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
             Write-Host "Siker: beállított jelszó: $desired"
@@ -82,15 +85,22 @@ jobs:
               }
             }
           }
+      
           if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
             Write-Error "User creation/update failed"
             exit 1
           }
+      
+          # Maszkolás a logban (GitHub Actions speciális formátum)
           Write-Host "::add-mask::$pwdUsed"
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_CREDS=$UserName:$pwdUsed"
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_USER=$UserName"
+      
+          # Írás GITHUB_ENV-be (ez a biztonságos mód, elkerüli a PowerShell változóparsing hibákat)
+          Add-Content -Path $env:GITHUB_ENV -Value ("RDP_CREDS={0}:{1}" -f $UserName, $pwdUsed)
+          Add-Content -Path $env:GITHUB_ENV -Value ("RDP_USER={0}" -f $UserName)
           Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD_SET=1"
+      
           Write-Host "Felhasználó készen."
+      
 
       - name: Install Tailscale
         shell: pwsh
