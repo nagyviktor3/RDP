@@ -30,7 +30,7 @@ jobs:
           function Set-UserAndGroups {
           param($UserName, $PlainPassword)
           $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
-    
+
           if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
               Write-Host "User '$UserName' létezik — jelszó frissítése..."
               Set-LocalUser -Name $UserName -Password $secure -ErrorAction Stop
@@ -38,7 +38,7 @@ jobs:
               Write-Host "User '$UserName' nem létezik — létrehozás..."
               New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
             }
-      
+
             try {
               if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
                 Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
@@ -49,15 +49,15 @@ jobs:
             } catch {
               Write-Warning "Figyelmeztetés a csoporttagság beállításakor: $_"
             }
-      
+
             return $PlainPassword
           }
-      
+
           $UserName = "RDP"
           $desired = "KUTYAcica"
           $fallback = "KUTYAcica01!"
           $pwdUsed = $null
-      
+
           try {
             $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
             Write-Host "Siker: beállított jelszó: $desired"
@@ -85,22 +85,21 @@ jobs:
               }
             }
           }
-      
+
           if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
             Write-Error "User creation/update failed"
             exit 1
           }
-      
+
           # Maszkolás a logban (GitHub Actions speciális formátum)
           Write-Host "::add-mask::$pwdUsed"
-      
+
           # Írás GITHUB_ENV-be (ez a biztonságos mód, elkerüli a PowerShell változóparsing hibákat)
           Add-Content -Path $env:GITHUB_ENV -Value ("RDP_CREDS={0}:{1}" -f $UserName, $pwdUsed)
           Add-Content -Path $env:GITHUB_ENV -Value ("RDP_USER={0}" -f $UserName)
           Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD_SET=1"
-      
+
           Write-Host "Felhasználó készen."
-      
 
       - name: Install Tailscale
         shell: pwsh
@@ -139,7 +138,6 @@ jobs:
           Write-Host "`n=== RDP ACCESS ==="
           Write-Host "Address: $env:TAILSCALE_IP"
           Write-Host "Username: RDP"
-
           # Próbáljuk beolvasni a GITHUB_ENV fájlból (ha létezik) a RDP_CREDS sort
           $creds = $null
           if (Test-Path $env:GITHUB_ENV) {
@@ -149,12 +147,10 @@ jobs:
               $creds = $line -replace '^RDP_CREDS=', ''
             }
           }
-
           # fallback: ha nem találtunk, használjuk a környezeti változót (ha be van állítva)
           if (-not $creds -or $creds -eq '') {
             if ($env:RDP_CREDS) { $creds = $env:RDP_CREDS }
           }
-
           if ($creds) {
             # NE írd ki a jelszót — csak mutassuk, hogy van érték (maszkolva)
             Write-Host "Password: (masked) — stored in RDP_CREDS"
@@ -164,57 +160,85 @@ jobs:
           } else {
             Write-Host "Password: (not available)"
           }
-
           Write-Host "==================`n"
-
           # keep runner alive
           while ($true) {
             Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
             Start-Sleep -Seconds 300
           }
 
-
   novnc:
     # no 'needs' here - fut párhuzamosan
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      VNC_PASSWORD: "vncpass123"   # változtasd erősre
+      VNC_PASSWORD: "vncpass123"   # változtasd erősre (ha használnád)
       NOVNC_PORT: "6080"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install deps and XFCE + TightVNC + websockify
+      - name: Install deps and XFCE + TightVNC + websockify + x11vnc
         shell: bash
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-goodies tightvncserver git python3-pip wget unzip
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-goodies tightvncserver git python3-pip wget unzip x11vnc
           sudo pip3 install --upgrade websockify
 
-      - name: Set VNC password non-interactively and start VNC
+      - name: Start insecure no-password noVNC exposed via ngrok (INSECURE — public)
         shell: bash
+        env:
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+          NOVNC_PORT: 6080
         run: |
+          set -e
           USER_HOME=/home/$(whoami)
           mkdir -p $USER_HOME/.vnc
-          printf "%s\n" "$VNC_PASSWORD" "$VNC_PASSWORD" "" | vncpasswd -f > $USER_HOME/.vnc/passwd || true
-          chmod 600 $USER_HOME/.vnc/passwd
-          DISPLAY_NUM=":1"
+
+          # Start a desktop (tightvncserver creates display :1 if needed)
           pkill Xtightvnc || true
-          tightvncserver $DISPLAY_NUM -geometry 1280x800 -depth 24
+          tightvncserver :1 -geometry 1280x800 -depth 24 || true
           sleep 2
 
-      - name: Install noVNC and start websockify
-        shell: bash
-        run: |
+          # Start x11vnc with NO password (INSECURE)
+          nohup x11vnc -display :1 -nopw -forever -shared -rfbport 5901 > /tmp/x11vnc.log 2>&1 &
+
+          # Install noVNC web UI if missing
           if [ ! -d /usr/share/novnc ]; then
-            sudo git clone https://github.com/novnc/noVNC.git /tmp/novnc_tmp
+            git clone https://github.com/novnc/noVNC.git /tmp/novnc_tmp
             sudo mkdir -p /usr/share/novnc
             sudo cp -r /tmp/novnc_tmp/. /usr/share/novnc
           fi
-          nohup websockify ${NOVNC_PORT} localhost:5901 --web /usr/share/novnc > /tmp/novnc.log 2>&1 &
-          sleep 2
-          echo "noVNC should be running; check /tmp/novnc.log"
+
+          # Start websockify / noVNC
+          nohup websockify --web=/usr/share/novnc ${NOVNC_PORT} localhost:5901 > /tmp/novnc.log 2>&1 &
+
+          # If NGROK_TOKEN not provided, print local URL and exit
+          if [ -z "$NGROK_TOKEN" ]; then
+            echo "NGROK_TOKEN nincs beállítva. noVNC helyi URL: http://localhost:${NOVNC_PORT}/vnc.html"
+            tail -n +1 /tmp/novnc.log || true
+            exit 0
+          fi
+
+          # Download and start ngrok to create a PUBLIC HTTPS tunnel to noVNC
+          wget -q -O /tmp/ngrok.zip "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
+          unzip -o /tmp/ngrok.zip -d /tmp/
+          sudo mv /tmp/ngrok /usr/local/bin/ngrok
+          sudo chmod +x /usr/local/bin/ngrok
+          /usr/local/bin/ngrok authtoken "$NGROK_TOKEN"
+          nohup /usr/local/bin/ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
+
+          # Wait and print ngrok public URL
+          sleep 4
+          if command -v curl >/dev/null 2>&1; then
+            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
+            echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
+          else
+            echo "Nyisd meg a /tmp/ngrok.log fájlt az URL-ért."
+            tail -n 50 /tmp/ngrok.log || true
+          fi
+
+          echo "INSECURE: noVNC elindítva jelszó nélkül! Ellenőrizd: /tmp/novnc.log és /tmp/x11vnc.log"
 
       - name: Install Tailscale and connect (Ubuntu)
         shell: bash
@@ -232,8 +256,18 @@ jobs:
       - name: Output noVNC URL
         shell: bash
         run: |
-          echo "noVNC should be reachable at: http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html"
-          echo "NOVNC_URL=http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html" >> $GITHUB_OUTPUT
+          # prefer ngrok public URL if created
+          if [ -f /tmp/ngrok.log ]; then
+            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
+            if [ -n "$PUB" ]; then
+              echo "noVNC public URL (ngrok): ${PUB}/vnc.html"
+              echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
+            fi
+          fi
+          # also print tailscale URL (if you want to use tailnet instead)
+          if [ -n "$TAILSCALE_IP" ]; then
+            echo "noVNC via Tailscale: http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html"
+          fi
 
       - name: Keep novnc job alive and show logs
         shell: bash
