@@ -168,136 +168,103 @@ jobs:
           }
 
   novnc:
-    # no 'needs' here - fut párhuzamosan
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      VNC_PASSWORD: "vncpass123"   # változtasd erősre (ha használnád)
+      VNC_PASSWORD: "vncPASS123!"   # legalább 8 karakter, jelszabály-kompatibilis
       NOVNC_PORT: "6080"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install deps and XFCE + TightVNC + websockify + x11vnc
+      - name: Install XFCE + Xvfb + x11vnc + noVNC deps
         shell: bash
         run: |
           sudo DEBIAN_FRONTEND=noninteractive apt update -y
-          sudo DEBIAN_FRONTEND=noninteractive apt install -y xfce4 xfce4-goodies tightvncserver git python3-pip wget unzip x11vnc
+          sudo DEBIAN_FRONTEND=noninteractive apt install -y \
+            xfce4 xfce4-goodies x11vnc xvfb websockify git python3-pip curl unzip wget
           sudo pip3 install --upgrade websockify
 
-      - name: Start insecure no-password noVNC exposed via ngrok (INSECURE) - improved
+      - name: Start virtual X server + VNC + noVNC + ngrok
         shell: bash
         env:
           NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
-          NOVNC_PORT: 6080
         run: |
           set -euo pipefail
           USER_HOME=/home/$(whoami)
           mkdir -p $USER_HOME/.vnc
-          pkill Xtightvnc || true
 
-          # start a display (tightvncserver may create :1)
-          tightvncserver :1 -geometry 1280x800 -depth 24 || true
+          echo "==> Indítom a virtuális X környezetet (Xvfb :1)..."
+          Xvfb :1 -screen 0 1280x800x24 &  # ez hozza létre a grafikus displayt
+          export DISPLAY=:1
           sleep 2
 
-          # start x11vnc (no password)
-          nohup x11vnc -display :1 -nopw -forever -shared -rfbport 5901 > /tmp/x11vnc.log 2>&1 &
-          sleep 1
+          echo "==> Indítom az XFCE sessiont..."
+          startxfce4 &>/tmp/xfce.log &
 
-          # ensure websockify + novnc webroot
+          echo "==> Indítom az x11vnc-t..."
+          x11vnc -display :1 -rfbport 5901 -rfbauth $USER_HOME/.vnc/passwd \
+                 -passwd $VNC_PASSWORD -forever -shared -bg -o /tmp/x11vnc.log
+
+          echo "==> Előkészítem a noVNC webroot-ot..."
           if [ ! -d /usr/share/novnc ]; then
             git clone https://github.com/novnc/noVNC.git /tmp/novnc_tmp
             sudo mkdir -p /usr/share/novnc
             sudo cp -r /tmp/novnc_tmp/. /usr/share/novnc
           fi
-          nohup websockify --web=/usr/share/novnc ${NOVNC_PORT} localhost:5901 > /tmp/novnc.log 2>&1 &
-          sleep 1
 
-          # Wait until 5901 is listening (max 20s), else print debug and exit non-zero
-          echo "Waiting for VNC port 5901 to be listening..."
+          echo "==> Indítom a websockify proxyt..."
+          nohup websockify --web=/usr/share/novnc ${NOVNC_PORT} localhost:5901 > /tmp/novnc.log 2>&1 &
+          sleep 2
+
+          echo "==> Ellenőrzöm, hogy hallgat-e a 5901 port..."
           for i in {1..20}; do
             if ss -tunlp | grep -q ":5901"; then
-              echo "5901 is listening."
+              echo "OK - VNC fut!"
               break
             fi
             echo "Waiting... ($i)"
             sleep 1
             if [ $i -eq 20 ]; then
-              echo "ERROR: 5901 not listening after wait. Dumping logs:"
-              echo "---- /tmp/x11vnc.log ----"
+              echo "ERROR: VNC nem indult el."
               tail -n 200 /tmp/x11vnc.log || true
-              echo "---- /tmp/novnc.log ----"
-              tail -n 200 /tmp/novnc.log || true
-              ss -tunlp || true
               exit 1
             fi
           done
 
-          # optional: test local web root
-          echo "Testing local noVNC page availability..."
+          echo "==> Tesztelem a helyi noVNC oldalt..."
           curl -sSf "http://127.0.0.1:${NOVNC_PORT}/vnc.html" >/dev/null || {
-            echo "ERROR: local noVNC page not available; dumping /tmp/novnc.log"
-            tail -n 200 /tmp/novnc.log || true
+            echo "noVNC oldal nem elérhető, logok:"
+            tail -n 100 /tmp/novnc.log || true
           }
 
-          # If NGROK_TOKEN is provided, setup ngrok
-          if [ -z "${NGROK_TOKEN:-}" ]; then
-            echo "NGROK_TOKEN not set. local noVNC: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
-            exit 0
+          echo "==> NGROK beállítás..."
+          if [ -n "${NGROK_TOKEN:-}" ]; then
+            wget -q -O /tmp/ngrok.zip "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
+            unzip -o /tmp/ngrok.zip -d /tmp/
+            sudo mv /tmp/ngrok /usr/local/bin/ngrok
+            sudo chmod +x /usr/local/bin/ngrok
+            ngrok authtoken "$NGROK_TOKEN"
+            nohup ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
+            sleep 4
+            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | \
+                  python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'] if d.get('tunnels') else '')")
+            echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
+            echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
+          else
+            echo "NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
           fi
 
-          # install ngrok and start
-          wget -q -O /tmp/ngrok.zip "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
-          unzip -o /tmp/ngrok.zip -d /tmp/
-          sudo mv /tmp/ngrok /usr/local/bin/ngrok
-          sudo chmod +x /usr/local/bin/ngrok
-          /usr/local/bin/ngrok authtoken "$NGROK_TOKEN"
-          nohup /usr/local/bin/ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
-          sleep 4
+          echo "==> Logok:"
+          tail -n 20 /tmp/x11vnc.log || true
+          tail -n 20 /tmp/novnc.log || true
+          tail -n 20 /tmp/ngrok.log || true
 
-          # print ngrok public URL
-          PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
-          echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
-          echo "PUBLIC_NOVNC=${PUB}/vnc.html" >> $GITHUB_OUTPUT
-
-          # show short logs
-          echo "=== last lines of logs ==="
-          tail -n 40 /tmp/x11vnc.log || true
-          tail -n 40 /tmp/novnc.log || true
-          tail -n 40 /tmp/ngrok.log || true
-
-
-      - name: Install Tailscale and connect (Ubuntu)
+      - name: Keep session alive
         shell: bash
         run: |
-          curl -fsSL https://tailscale.com/install.sh | sh
-          sudo tailscale up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-novnc-$GITHUB_RUN_ID
-          for i in {1..10}; do
-            TSIP=$(tailscale ip -4 || true)
-            if [ -n "$TSIP" ]; then echo "TSIP=$TSIP" && break; fi
-            sleep 3
+          while true; do
+            echo "[$(date)] noVNC session active..."
+            sleep 300
           done
-          if [ -z "$TSIP" ]; then echo "Tailscale IP not assigned"; exit 1; fi
-          echo "TAILSCALE_IP=$TSIP" >> $GITHUB_ENV
-
-      - name: Output noVNC URL
-        shell: bash
-        run: |
-          # prefer ngrok public URL if created
-          if [ -f /tmp/ngrok.log ]; then
-            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; data=json.load(sys.stdin); print(data['tunnels'][0]['public_url'] if data.get('tunnels') else '')")
-            if [ -n "$PUB" ]; then
-              echo "noVNC public URL (ngrok): ${PUB}/vnc.html"
-              echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
-            fi
-          fi
-          # also print tailscale URL (if you want to use tailnet instead)
-          if [ -n "$TAILSCALE_IP" ]; then
-            echo "noVNC via Tailscale: http://$TAILSCALE_IP:${NOVNC_PORT}/vnc.html"
-          fi
-
-      - name: Keep novnc job alive and show logs
-        shell: bash
-        run: |
-          echo "=== noVNC logs ===" && tail -n +1 /tmp/novnc.log || true
-          while true; do sleep 300; done
