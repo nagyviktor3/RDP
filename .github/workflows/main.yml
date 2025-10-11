@@ -166,18 +166,19 @@ jobs:
             Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
             Start-Sleep -Seconds 300
           }
-
+          
+          
   novnc:
     runs-on: ubuntu-latest
     timeout-minutes: 360
     env:
-      VNC_PASSWORD: "vncPASS123!"   # legalább 8 karakter, jelszabály-kompatibilis
+      VNC_PASSWORD: "vncPASS123!"
       NOVNC_PORT: "6080"
-
+  
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
+  
       - name: Install XFCE + Xvfb + x11vnc + noVNC deps
         shell: bash
         run: |
@@ -185,60 +186,59 @@ jobs:
           sudo DEBIAN_FRONTEND=noninteractive apt install -y \
             xfce4 xfce4-goodies x11vnc xvfb websockify git python3-pip curl unzip wget
           sudo pip3 install --upgrade websockify
-
+  
       - name: Start virtual X server + VNC + noVNC + ngrok
         shell: bash
         env:
-          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN }}
+          NGROK_TOKEN: ${{ secrets.NGROK_TOKEN || '' }}
         run: |
           set -euo pipefail
           USER_HOME=/home/$(whoami)
           mkdir -p $USER_HOME/.vnc
-
+  
           echo "==> Indítom a virtuális X környezetet (Xvfb :1)..."
-          Xvfb :1 -screen 0 1280x800x24 &  # ez hozza létre a grafikus displayt
+          Xvfb :1 -screen 0 1280x800x24 &
           export DISPLAY=:1
           sleep 2
-
+  
           echo "==> Indítom az XFCE sessiont..."
           startxfce4 &>/tmp/xfce.log &
-
+  
           echo "==> Indítom az x11vnc-t..."
-          x11vnc -display :1 -rfbport 5901 -rfbauth $USER_HOME/.vnc/passwd \
-                 -passwd $VNC_PASSWORD -forever -shared -bg -o /tmp/x11vnc.log
-
+          x11vnc -display :1 -rfbport 5901 -passwd "$VNC_PASSWORD" -forever -shared -bg -o /tmp/x11vnc.log
+  
           echo "==> Előkészítem a noVNC webroot-ot..."
           if [ ! -d /usr/share/novnc ]; then
             git clone https://github.com/novnc/noVNC.git /tmp/novnc_tmp
             sudo mkdir -p /usr/share/novnc
             sudo cp -r /tmp/novnc_tmp/. /usr/share/novnc
           fi
-
+  
           echo "==> Indítom a websockify proxyt..."
           nohup websockify --web=/usr/share/novnc ${NOVNC_PORT} localhost:5901 > /tmp/novnc.log 2>&1 &
           sleep 2
-
-          echo "==> Ellenőrzöm, hogy hallgat-e a 5901 port..."
+  
+          echo "==> Ellenőrzöm, hogy fut-e a VNC..."
           for i in {1..20}; do
             if ss -tunlp | grep -q ":5901"; then
               echo "OK - VNC fut!"
               break
             fi
-            echo "Waiting... ($i)"
+            echo "Várakozás... ($i)"
             sleep 1
             if [ $i -eq 20 ]; then
-              echo "ERROR: VNC nem indult el."
+              echo "HIBA: VNC nem indult el."
               tail -n 200 /tmp/x11vnc.log || true
               exit 1
             fi
           done
-
-          echo "==> Tesztelem a helyi noVNC oldalt..."
+  
+          echo "==> Tesztelem a noVNC oldalt..."
           curl -sSf "http://127.0.0.1:${NOVNC_PORT}/vnc.html" >/dev/null || {
-            echo "noVNC oldal nem elérhető, logok:"
-            tail -n 100 /tmp/novnc.log || true
+            echo "noVNC oldal nem elérhető, logok:";
+            tail -n 100 /tmp/novnc.log || true;
           }
-
+  
           echo "==> NGROK beállítás..."
           if [ -n "${NGROK_TOKEN:-}" ]; then
             wget -q -O /tmp/ngrok.zip "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
@@ -248,19 +248,18 @@ jobs:
             ngrok authtoken "$NGROK_TOKEN"
             nohup ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
             sleep 4
-            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | \
-                  python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'] if d.get('tunnels') else '')")
+            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'] if d.get('tunnels') else '')")
             echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
             echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
           else
-            echo "NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
+            echo "⚠️ NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
           fi
-
+  
           echo "==> Logok:"
           tail -n 20 /tmp/x11vnc.log || true
           tail -n 20 /tmp/novnc.log || true
           tail -n 20 /tmp/ngrok.log || true
-
+  
       - name: Keep session alive
         shell: bash
         run: |
@@ -268,3 +267,4 @@ jobs:
             echo "[$(date)] noVNC session active..."
             sleep 300
           done
+  
