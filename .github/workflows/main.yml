@@ -241,41 +241,44 @@ jobs:
   
           echo "==> NGROK beállítás..."
           if [ -n "${NGROK_TOKEN:-}" ]; then
-            # NGROK 3.x verzió letöltése
+            echo "==> Tisztítom a régi ngrok konfigurációkat..."
+            rm -rf ~/.ngrok2 ~/.config/ngrok || true
+  
+            echo "==> NGROK 3.x verzió letöltése..."
             wget -q -O /tmp/ngrok.zip "https://ngrok-agent.s3.amazonaws.com/ngrok-v3-stable-linux-amd64.zip"
             unzip -o /tmp/ngrok.zip -d /tmp/
             sudo mv /tmp/ngrok /usr/local/bin/ngrok
             sudo chmod +x /usr/local/bin/ngrok
-            ngrok authtoken "$NGROK_TOKEN"
+  
+            echo "==> NGROK authtoken hozzáadása..."
+            ngrok config add-authtoken "$NGROK_TOKEN"
+  
+            echo "==> NGROK HTTP tunnel indítása..."
             nohup ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
-           # Várjuk meg, amíg az ngrok API válaszol
-          for i in {1..10}; do
-          if curl -s http://127.0.0.1:4040/api/tunnels >/tmp/ngrok_api.json && grep -q 'public_url' /tmp/ngrok_api.json; then
-          PUB=$(python3 -c "import json; print(json.load(open('/tmp/ngrok_api.json'))['tunnels'][0]['public_url'])")
-          break
+  
+            for i in {1..15}; do
+              if curl -s http://127.0.0.1:4040/api/tunnels >/tmp/ngrok_api.json && grep -q 'public_url' /tmp/ngrok_api.json; then
+                PUB=$(python3 -c "import json; print(json.load(open('/tmp/ngrok_api.json'))['tunnels'][0]['public_url'])")
+                echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
+                echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
+                break
+              fi
+              echo "⏳ Várakozás ngrok indulására... ($i)"
+              sleep 2
+              if [ $i -eq 15 ]; then
+                echo "❌ NGROK API nem elérhető. Ellenőrizd a tokent vagy a hálózatot."
+                tail -n 50 /tmp/ngrok.log || true
+                exit 1
+              fi
+            done
+          else
+            echo "⚠️ NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
           fi
-          echo "⏳ Várakozás ngrok indulására... ($i)"
-          sleep 2
-          if [ $i -eq 10 ]; then
-          echo "❌ NGROK API nem elérhető. Ellenőrizd a tokent vagy a hálózatot."
-          tail -n 50 /tmp/ngrok.log || true
-          exit 1
-          fi
-          done
-          
-          
-          echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
-          echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
-                      echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
-                      echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
-                    else
-                      echo "⚠️ NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
-                    fi
-            
-                    echo "==> Logok:"
-                    tail -n 20 /tmp/x11vnc.log || true
-                    tail -n 20 /tmp/novnc.log || true
-                    tail -n 20 /tmp/ngrok.log || true
+  
+          echo "==> Logok:"
+          tail -n 20 /tmp/x11vnc.log || true
+          tail -n 20 /tmp/novnc.log || true
+          tail -n 20 /tmp/ngrok.log || true
   
       - name: Keep session alive
         shell: bash
@@ -284,4 +287,7 @@ jobs:
             echo "[$(date)] noVNC session active..."
             sleep 300
           done
-  
+          active..."
+            sleep 300
+            done
+    
