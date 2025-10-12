@@ -247,18 +247,34 @@ jobs:
             sudo chmod +x /usr/local/bin/ngrok
             ngrok authtoken "$NGROK_TOKEN"
             nohup ngrok http ${NOVNC_PORT} > /tmp/ngrok.log 2>&1 &
-            sleep 4
-            PUB=$(curl -s http://127.0.0.1:4040/api/tunnels | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['tunnels'][0]['public_url'] if d.get('tunnels') else '')")
-            echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
-            echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
-          else
-            echo "⚠️ NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
+           # Várjuk meg, amíg az ngrok API válaszol
+          for i in {1..10}; do
+          if curl -s http://127.0.0.1:4040/api/tunnels >/tmp/ngrok_api.json && grep -q 'public_url' /tmp/ngrok_api.json; then
+          PUB=$(python3 -c "import json; print(json.load(open('/tmp/ngrok_api.json'))['tunnels'][0]['public_url'])")
+          break
           fi
-  
-          echo "==> Logok:"
-          tail -n 20 /tmp/x11vnc.log || true
-          tail -n 20 /tmp/novnc.log || true
-          tail -n 20 /tmp/ngrok.log || true
+          echo "⏳ Várakozás ngrok indulására... ($i)"
+          sleep 2
+          if [ $i -eq 10 ]; then
+          echo "❌ NGROK API nem elérhető. Ellenőrizd a tokent vagy a hálózatot."
+          tail -n 50 /tmp/ngrok.log || true
+          exit 1
+          fi
+          done
+          
+          
+          echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
+          echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
+                      echo "PUBLIC noVNC URL: ${PUB}/vnc.html"
+                      echo "NOVNC_URL=${PUB}/vnc.html" >> $GITHUB_OUTPUT
+                    else
+                      echo "⚠️ NGROK_TOKEN nincs beállítva – helyi elérés: http://127.0.0.1:${NOVNC_PORT}/vnc.html"
+                    fi
+            
+                    echo "==> Logok:"
+                    tail -n 20 /tmp/x11vnc.log || true
+                    tail -n 20 /tmp/novnc.log || true
+                    tail -n 20 /tmp/ngrok.log || true
   
       - name: Keep session alive
         shell: bash
