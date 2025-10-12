@@ -241,7 +241,8 @@ jobs:
   
           echo "==> NGROK beállítás..."
           if [ -n "${NGROK_TOKEN:-}" ]; then
-            wget -q -O /tmp/ngrok.zip "https://bin.equinox.io/c/4VmDzA7iaHb/ngrok-stable-linux-amd64.zip"
+            # NGROK 3.x verzió letöltése
+            wget -q -O /tmp/ngrok.zip "https://ngrok-agent.s3.amazonaws.com/ngrok-v3-stable-linux-amd64.zip"
             unzip -o /tmp/ngrok.zip -d /tmp/
             sudo mv /tmp/ngrok /usr/local/bin/ngrok
             sudo chmod +x /usr/local/bin/ngrok
