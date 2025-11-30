@@ -102,26 +102,34 @@ jobs:
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
       # --- ITT VAN AZ ÚJ RÉSZ ---
-      - name: Install Tools & Start Apps (AnyDesk + Gemini CLI)
+
+      - name: Install AnyDesk (winget or MSI fallback) - experimental
         shell: pwsh
         run: |
+          Write-Host "Attempting winget install of AnyDesk (may be blocked on hosted runner)"
+          try {
+            winget install --id AnyDesk.AnyDesk -e --silent
+            Write-Host "winget install attempted"
+          } catch {
+            Write-Warning "winget failed or not allowed, trying MSI download"
+            $msi = "$env:TEMP\AnyDesk.msi"
+            Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.msi" -OutFile $msi -UseBasicParsing
+            Start-Process msiexec.exe -ArgumentList "/i", "`"$msi`"", "/quiet", "/norestart" -Wait
+            Remove-Item $msi -Force
+          }
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
 
-          Write-Host "=== Downloading and Starting AnyDesk ==="
-          # Letöltés az Asztalra, hogy lásd is, ha belépsz
-          $desktopPath = [Environment]::GetFolderPath("Desktop")
-          $anyDeskPath = "$desktopPath\AnyDesk.exe"
-          
-          Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile $anyDeskPath
-          Write-Host "AnyDesk downloaded to: $anyDeskPath"
-          
-          # Indítás (aszinkron módon, hogy ne akassza meg a folyamatot)
-          Start-Process -FilePath $anyDeskPath
-          Write-Host "AnyDesk started."
-          
-          Write-Host "=== Installing Gemini CLI via NPM ==="
-          # A cmd parancs futtatása PowerShellből
-          cmd /c "npm install -g @google/gemini-cli"
-          
+      - name: Run Gemini CLI via npx
+        shell: pwsh
+        run: |
+          Write-Host "Running Gemini CLI via npx (no global install required)"
+          npx -y @google/gemini-cli --version
+
+
+
          
       # ---------------------------
 
