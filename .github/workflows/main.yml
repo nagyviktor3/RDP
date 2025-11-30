@@ -24,13 +24,12 @@ jobs:
             dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force -ErrorAction SilentlyContinue
 
-      - name: Create or update RDP User (handle existing user + fallback passwords)
+      - name: Create or update RDP User
         shell: pwsh
         run: |
           function Set-UserAndGroups {
           param($UserName, $PlainPassword)
           $secure = ConvertTo-SecureString $PlainPassword -AsPlainText -Force
-
           if (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue) {
               Write-Host "User '$UserName' létezik — jelszó frissítése..."
               Set-LocalUser -Name $UserName -Password $secure -ErrorAction Stop
@@ -38,7 +37,6 @@ jobs:
               Write-Host "User '$UserName' nem létezik — létrehozás..."
               New-LocalUser -Name $UserName -Password $secure -AccountNeverExpires -Description "Created by workflow" -ErrorAction Stop
             }
-
             try {
               if (-not (Get-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue)) {
                 Add-LocalGroupMember -Group "Administrators" -Member $UserName -ErrorAction SilentlyContinue
@@ -49,15 +47,12 @@ jobs:
             } catch {
               Write-Warning "Figyelmeztetés a csoporttagság beállításakor: $_"
             }
-
             return $PlainPassword
           }
-
           $UserName = "RDP"
           $desired = "KUTYAcica"
           $fallback = "KUTYAcica01!"
           $pwdUsed = $null
-
           try {
             $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $desired
             Write-Host "Siker: beállított jelszó: $desired"
@@ -69,36 +64,19 @@ jobs:
             } catch {
               Write-Warning "Fallback jelszóval sem sikerült: $_"
               Write-Host "Generálok egy policy-kompatibilis jelszót..."
-              $upper = -join ((65..90) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-              $lower = -join ((97..122) | Get-Random -Count 4 | ForEach-Object {[char]$_})
-              $digits = -join ((48..57) | Get-Random -Count 2 | ForEach-Object {[char]$_})
-              $specials = "@#%&*!"
-              $special = ($specials.ToCharArray() | Get-Random -Count 1) -join ''
-              $gen = ($upper + $lower + $digits + $special)
-              if ($gen.Length -lt 12) { $gen += "A1!" }
+              $gen = -join ((65..90) + (97..122) + (48..57) | Get-Random -Count 14 | ForEach-Object {[char]$_}) + "A1!"
               try {
                 $pwdUsed = Set-UserAndGroups -UserName $UserName -PlainPassword $gen
                 Write-Host "Siker: generált jelszó beállítva."
               } catch {
-                Write-Error "Nem sikerült jelszót beállítani egyik próbálkozással sem: $_"
+                Write-Error "Nem sikerült jelszót beállítani: $_"
                 exit 1
               }
             }
           }
-
-          if (-not (Get-LocalUser -Name $UserName -ErrorAction SilentlyContinue)) {
-            Write-Error "User creation/update failed"
-            exit 1
-          }
-
-          # Maszkolás a logban (GitHub Actions speciális formátum)
           Write-Host "::add-mask::$pwdUsed"
-
-          # Írás GITHUB_ENV-be (ez a biztonságos mód, elkerüli a PowerShell változóparsing hibákat)
           Add-Content -Path $env:GITHUB_ENV -Value ("RDP_CREDS={0}:{1}" -f $UserName, $pwdUsed)
           Add-Content -Path $env:GITHUB_ENV -Value ("RDP_USER={0}" -f $UserName)
-          Add-Content -Path $env:GITHUB_ENV -Value "RDP_PASSWORD_SET=1"
-
           Write-Host "Felhasználó készen."
 
       - name: Install Tailscale
@@ -110,63 +88,61 @@ jobs:
           Start-Process msiexec.exe -ArgumentList "/i", "`"$installerPath`"", "/quiet", "/norestart" -Wait
           Remove-Item $installerPath -Force
 
-      - name: Establish Tailscale Connection (Windows)
+      - name: Establish Tailscale Connection
         shell: pwsh
         run: |
           & "$env:ProgramFiles\Tailscale\tailscale.exe" up --authkey=${{ secrets.TAILSCALE_AUTH_KEY }} --hostname=gh-runner-$env:GITHUB_RUN_ID
-          $tsIP = $null
-          $retries = 0
+          $tsIP = $null; $retries = 0
           while (-not $tsIP -and $retries -lt 10) {
               $tsIP = & "$env:ProgramFiles\Tailscale\tailscale.exe" ip -4
               Start-Sleep -Seconds 5
               $retries++
           }
-          if (-not $tsIP) { Write-Error "Tailscale IP not assigned. Exiting."; exit 1 }
+          if (-not $tsIP) { Write-Error "Tailscale IP missing"; exit 1 }
           echo "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
+
+      # --- ITT VAN AZ ÚJ RÉSZ ---
+      - name: Install Tools & Start Apps (AnyDesk + Gemini CLI)
+        shell: pwsh
+        run: |
+          Write-Host "=== Installing Gemini CLI via NPM ==="
+          # A cmd parancs futtatása PowerShellből
+          cmd /c "npm install -g @google/gemini-cli"
+          
+          Write-Host "=== Downloading and Starting AnyDesk ==="
+          # Letöltés az Asztalra, hogy lásd is, ha belépsz
+          $desktopPath = [Environment]::GetFolderPath("Desktop")
+          $anyDeskPath = "$desktopPath\AnyDesk.exe"
+          
+          Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile $anyDeskPath
+          Write-Host "AnyDesk downloaded to: $anyDeskPath"
+          
+          # Indítás (aszinkron módon, hogy ne akassza meg a folyamatot)
+          Start-Process -FilePath $anyDeskPath
+          Write-Host "AnyDesk started."
+      # ---------------------------
 
       - name: Verify RDP Accessibility
         shell: pwsh
         run: |
           Write-Host "Tailscale IP: $env:TAILSCALE_IP"
-          $testResult = Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389
-          if (-not $testResult.TcpTestSucceeded) { Write-Error "TCP connection to RDP port 3389 failed"; exit 1 }
+          if (-not (Test-NetConnection -ComputerName $env:TAILSCALE_IP -Port 3389).TcpTestSucceeded) { 
+            Write-Error "RDP port check failed"; exit 1 
+          }
           Write-Host "TCP connectivity successful!"
 
       - name: Maintain Connection
         shell: pwsh
         run: |
-          Write-Host "`n=== RDP ACCESS ==="
+          Write-Host "`n=== RDP ACCESS READY ==="
           Write-Host "Address: $env:TAILSCALE_IP"
-          Write-Host "Username: RDP"
-          # Próbáljuk beolvasni a GITHUB_ENV fájlból (ha létezik) a RDP_CREDS sort
-          $creds = $null
-          if (Test-Path $env:GITHUB_ENV) {
-            $line = Get-Content -Path $env:GITHUB_ENV | Where-Object { $_ -match '^RDP_CREDS=' } | Select-Object -First 1
-            if ($line) {
-              # eltávolítjuk a kulcsot, csak a "User:Pass" részt hagyjuk meg
-              $creds = $line -replace '^RDP_CREDS=', ''
-            }
-          }
-          # fallback: ha nem találtunk, használjuk a környezeti változót (ha be van állítva)
-          if (-not $creds -or $creds -eq '') {
-            if ($env:RDP_CREDS) { $creds = $env:RDP_CREDS }
-          }
-          if ($creds) {
-            # NE írd ki a jelszót — csak mutassuk, hogy van érték (maszkolva)
-            Write-Host "Password: (masked) — stored in RDP_CREDS"
-            # Ha nagyon kell, ki tudsz belőle egy részt mutatni, pl. csak a felhasználó:
-            $userPart = ($creds -split ':')[0]
-            Write-Host "User from stored creds: $userPart"
-          } else {
-            Write-Host "Password: (not available)"
+          $creds = $env:RDP_CREDS -replace '^RDP_CREDS=', ''
+          if ($creds) { 
+             Write-Host "User: $(($creds -split ':')[0])"
+             Write-Host "Password: (masked)" 
           }
           Write-Host "==================`n"
-          # keep runner alive
           while ($true) {
-            Write-Host "[$(Get-Date)] RDP Active - Use Ctrl+C in workflow to terminate"
+            Write-Host "[$(Get-Date)] Runner Active - Gemini CLI installed & AnyDesk started."
             Start-Sleep -Seconds 300
           }
-          
-          
-  
-    
