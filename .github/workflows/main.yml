@@ -105,10 +105,7 @@ jobs:
       - name: Install Tools & Start Apps (AnyDesk + Gemini CLI)
         shell: pwsh
         run: |
-          Write-Host "=== Installing Gemini CLI via NPM ==="
-          # A cmd parancs futtatása PowerShellből
-          cmd /c "npm install -g @google/gemini-cli"
-          
+
           Write-Host "=== Downloading and Starting AnyDesk ==="
           # Letöltés az Asztalra, hogy lásd is, ha belépsz
           $desktopPath = [Environment]::GetFolderPath("Desktop")
@@ -120,6 +117,12 @@ jobs:
           # Indítás (aszinkron módon, hogy ne akassza meg a folyamatot)
           Start-Process -FilePath $anyDeskPath
           Write-Host "AnyDesk started."
+          
+          Write-Host "=== Installing Gemini CLI via NPM ==="
+          # A cmd parancs futtatása PowerShellből
+          cmd /c "npm install -g @google/gemini-cli"
+          
+         
       # ---------------------------
 
       - name: Verify RDP Accessibility
