@@ -103,20 +103,39 @@ jobs:
 
       # --- ITT VAN AZ ÚJ RÉSZ ---
 
-      - name: Install AnyDesk (winget or MSI fallback) - experimental
+      - name: Install / Download AnyDesk (winget -> fallback exe)
         shell: pwsh
         run: |
-          Write-Host "Attempting winget install of AnyDesk (may be blocked on hosted runner)"
+          Write-Host "=== Attempting non-interactive winget install of AnyDesk ==="
+      
+          $wingetOK = $false
           try {
-            winget install --id AnyDesk.AnyDesk -e --silent
-            Write-Host "winget install attempted"
+            & winget install --id AnyDesk.AnyDesk -e --silent --accept-source-agreements --accept-package-agreements
+            if ($LASTEXITCODE -eq 0) {
+              Write-Host "winget install successful."
+              $wingetOK = $true
+            } else {
+              Write-Warning "winget returned non-zero exit code: $LASTEXITCODE"
+            }
           } catch {
-            Write-Warning "winget failed or not allowed, trying MSI download"
-            $msi = "$env:TEMP\AnyDesk.msi"
-            Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.msi" -OutFile $msi -UseBasicParsing
-            Start-Process msiexec.exe -ArgumentList "/i", "`"$msi`"", "/quiet", "/norestart" -Wait
-            Remove-Item $msi -Force
+            Write-Warning "winget is blocked or failed: $_"
           }
+      
+          if (-not $wingetOK) {
+            Write-Host "=== winget failed → downloading AnyDesk.exe only ==="
+      
+            $desktop = [Environment]::GetFolderPath("Desktop")
+            $exePath = Join-Path $desktop "AnyDesk.exe"
+      
+            Write-Host "Downloading AnyDesk.exe to $exePath"
+            Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile $exePath -UseBasicParsing
+      
+            Write-Host "Starting AnyDesk.exe (non-installed mode)"
+            Start-Process -FilePath $exePath
+      
+            Write-Host "AnyDesk.exe downloaded and started successfully."
+          }
+
       - name: Setup Node
         uses: actions/setup-node@v4
         with:
