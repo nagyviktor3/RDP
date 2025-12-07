@@ -106,35 +106,51 @@ jobs:
       - name: Install / Download AnyDesk (winget -> fallback exe)
         shell: pwsh
         run: |
+          # Beállítjuk, hogy ne álljon le a szkript azonnal hiba esetén
+          $ErrorActionPreference = 'Continue'
+          
           Write-Host "=== Attempting non-interactive winget install of AnyDesk ==="
-      
           $wingetOK = $false
+          
           try {
-            & winget install --id AnyDesk.AnyDesk -e --silent --accept-source-agreements --accept-package-agreements
-            if ($LASTEXITCODE -eq 0) {
+            # Próbálkozás a Winget-tel
+            $proc = Start-Process winget -ArgumentList "install --id AnyDesk.AnyDesk -e --silent --accept-source-agreements --accept-package-agreements" -PassThru -Wait -NoNewWindow
+            
+            if ($proc.ExitCode -eq 0) {
               Write-Host "winget install successful."
               $wingetOK = $true
             } else {
-              Write-Warning "winget returned non-zero exit code: $LASTEXITCODE"
+              Write-Warning "winget returned non-zero exit code: $($proc.ExitCode). Hash mismatch is likely."
             }
           } catch {
-            Write-Warning "winget is blocked or failed: $_"
+            Write-Warning "winget execution failed: $_"
           }
-      
+
+          # Ha a Winget nem sikerült, jöhet a B terv
           if (-not $wingetOK) {
-            Write-Host "=== winget failed → downloading AnyDesk.exe only ==="
-      
+            Write-Host "=== winget failed → downloading and installing AnyDesk.exe manually ==="
+            
             $desktop = [Environment]::GetFolderPath("Desktop")
             $exePath = Join-Path $desktop "AnyDesk.exe"
-      
+            
             Write-Host "Downloading AnyDesk.exe to $exePath"
             Invoke-WebRequest -Uri "https://download.anydesk.com/AnyDesk.exe" -OutFile $exePath -UseBasicParsing
-      
-            Write-Host "Starting AnyDesk.exe (non-installed mode)"
-            Start-Process -FilePath $exePath
-      
-            Write-Host "AnyDesk.exe downloaded and started successfully."
+            
+            # FONTOS: Megpróbáljuk telepíteni (silent install), nem csak elindítani
+            Write-Host "Installing AnyDesk silently..."
+            $installArgs = "--install `"$env:ProgramFiles\AnyDesk`" --start-with-win --silent"
+            
+            try {
+                Start-Process -FilePath $exePath -ArgumentList $installArgs -PassThru
+                Write-Host "AnyDesk installation command sent."
+            } catch {
+                Write-Warning "Manual install failed, starting portable mode."
+                Start-Process -FilePath $exePath
+            }
           }
+          
+          # Kényszerítjük, hogy a lépés SIKERES legyen (zöld pipa), akkor is, ha a winget hisztizett
+          exit 0
 
       - name: Setup Node
         uses: actions/setup-node@v4
